@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SPE Remote Control</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <h1><span>SPE 1.5K-FA</span> &mdash; Remote Control</h1>
+
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Disconnected</span>
+  </div>
+
+  <!-- Power output -->
+  <div class="power-section">
+    <div class="power-header">
+      <span class="power-label">OUTPUT</span>
+      <span class="swr-value" id="swrDisplay">SWR: ---</span>
+    </div>
+    <div class="power-value"><span id="powerValue">0</span> <span class="unit">W</span></div>
+    <div class="power-bar-track">
+      <div class="power-bar-fill" id="powerBar"></div>
+    </div>
+    <div class="power-bar-ticks">
+      <span>0</span><span>250</span><span>500</span><span>750</span><span>1.0k</span><span>1.3k</span><span>1.5k</span>
+    </div>
+  </div>
+
+  <!-- Gauges -->
+  <div class="gauges">
+    <div class="gauge-card">
+      <canvas id="gaugeSWR" width="120" height="80"></canvas>
+      <div class="gauge-reading" id="valSWR">1.0</div>
+      <div class="gauge-label">SWR</div>
+    </div>
+    <div class="gauge-card">
+      <canvas id="gaugeDrain" width="120" height="80"></canvas>
+      <div class="gauge-reading" id="valDrain">0</div>
+      <div class="gauge-label">Drain A</div>
+    </div>
+    <div class="gauge-card">
+      <canvas id="gaugeTemp" width="120" height="80"></canvas>
+      <div class="gauge-reading" id="valTemp">0&deg;C</div>
+      <div class="gauge-label">PA Temp</div>
+    </div>
+    <div class="gauge-card">
+      <canvas id="gaugeVolt" width="120" height="80"></canvas>
+      <div class="gauge-reading" id="valVolt">0</div>
+      <div class="gauge-label">Voltage</div>
+    </div>
+  </div>
+
+  <!-- Info chips -->
+  <div class="info-row">
+    <div class="chip" id="chipTX"><span class="label">STATUS</span> <span id="txStatus">RX</span></div>
+    <div class="chip"><span class="label">BAND</span> <span id="bandDisplay">---</span></div>
+    <div class="chip"><span class="label">ANT</span> <span id="antDisplay">-</span></div>
+    <div class="chip"><span class="label">IN</span> <span id="inputDisplay">-</span></div>
+    <div class="chip"><span class="label">LEVEL</span> <span id="levelDisplay">-</span></div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <button class="btn" id="btnOper" onclick="sendCmd('oper')">Operate</button>
+    <button class="btn" id="btnAnt" onclick="sendCmd('antenna')">ANT</button>
+    <button class="btn" id="btnTune" onclick="sendCmd('tune')">TUNE</button>
+    <button class="btn" id="btnInput" onclick="sendCmd('input')">INPUT</button>
+    <button class="btn" id="btnGain" onclick="sendCmd('gain')">GAIN</button>
+  </div>
+
+  <!-- Alert bar -->
+  <div class="alert-bar clear" id="alertBar"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
