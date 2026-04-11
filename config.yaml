@@ -1,5 +1,5 @@
 serial:
-  port: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AI040UZR-if00-port0
+  port: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AI040V80-if00-port0
   baudrate: 115200
   timeout: 1.0
 
