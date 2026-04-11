@@ -6,20 +6,46 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
-# Command bytes for SPE amplifiers
-CMD_REQUEST = b"\x55\x55\x55\x01\x90\x90"
-CMD_OPERATE = b"\x55\x55\x55\x01\x0D\x0D"
-CMD_ANTENNA = b"\x55\x55\x55\x01\x04\x04"
-CMD_INPUT = b"\x55\x55\x55\x01\x01\x01"
-CMD_TUNE = b"\x55\x55\x55\x01\x09\x09"
-CMD_GAIN = b"\x55\x55\x55\x01\x0b\x0b"
+# Command bytes for SPE Expert 1.3K-FA / 1.5K-FA / 2K-FA
+# Packet format: 0x55 0x55 0x55 [CNT] [DATA...] [CHK]
+# For single-byte commands: CNT=0x01, CHK=DATA
+# Reference: SPE Application Programmer's Guide Rev 1.1
 
+CMD_INPUT = b"\x55\x55\x55\x01\x01\x01"       # Toggle input port
+CMD_BAND_DN = b"\x55\x55\x55\x01\x02\x02"     # Band down
+CMD_BAND_UP = b"\x55\x55\x55\x01\x03\x03"     # Band up
+CMD_ANTENNA = b"\x55\x55\x55\x01\x04\x04"     # Cycle TX antenna
+CMD_L_MINUS = b"\x55\x55\x55\x01\x05\x05"     # ATU L minus
+CMD_L_PLUS = b"\x55\x55\x55\x01\x06\x06"      # ATU L plus
+CMD_C_MINUS = b"\x55\x55\x55\x01\x07\x07"     # ATU C minus
+CMD_C_PLUS = b"\x55\x55\x55\x01\x08\x08"      # ATU C plus
+CMD_TUNE = b"\x55\x55\x55\x01\x09\x09"        # Start ATU tuning
+CMD_SWITCH_OFF = b"\x55\x55\x55\x01\x0A\x0A"  # Power OFF amplifier
+CMD_POWER = b"\x55\x55\x55\x01\x0B\x0B"       # Toggle power level (L/M/H)
+CMD_DISPLAY = b"\x55\x55\x55\x01\x0C\x0C"     # Display toggle
+CMD_OPERATE = b"\x55\x55\x55\x01\x0D\x0D"     # Toggle operate/standby
+CMD_CAT = b"\x55\x55\x55\x01\x0E\x0E"         # CAT mode
+CMD_LEFT = b"\x55\x55\x55\x01\x0F\x0F"        # Left arrow / menu nav
+CMD_RIGHT = b"\x55\x55\x55\x01\x10\x10"       # Right arrow / menu nav
+CMD_SET = b"\x55\x55\x55\x01\x11\x11"         # Set / menu enter
+CMD_BL_ON = b"\x55\x55\x55\x01\x82\x82"       # Backlight on
+CMD_BL_OFF = b"\x55\x55\x55\x01\x83\x83"      # Backlight off
+CMD_REQUEST = b"\x55\x55\x55\x01\x90\x90"     # Request status string
+
+# Commands accessible via WebSocket
 COMMANDS = {
-    "oper": CMD_OPERATE,
-    "antenna": CMD_ANTENNA,
     "input": CMD_INPUT,
+    "band_dn": CMD_BAND_DN,
+    "band_up": CMD_BAND_UP,
+    "antenna": CMD_ANTENNA,
     "tune": CMD_TUNE,
-    "gain": CMD_GAIN,
+    "power_off": CMD_SWITCH_OFF,
+    "power_level": CMD_POWER,
+    "display": CMD_DISPLAY,
+    "oper": CMD_OPERATE,
+    "gain": CMD_POWER,           # Alias kept for backward compatibility
+    "backlight_on": CMD_BL_ON,
+    "backlight_off": CMD_BL_OFF,
 }
 
 BAND_MAP = {

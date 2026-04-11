@@ -46,7 +46,14 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
 
     def on_message(self, message: str) -> None:
         logger.info(f"Command from {self.request.remote_ip}: {message}")
-        if message in ("power_on", "power_off") and self._power_controller:
+        if message == "power_on" and self._power_controller:
+            # Power ON requires DTR hardware toggle (no serial command exists)
+            import tornado.ioloop
+            tornado.ioloop.IOLoop.current().spawn_callback(
+                self._handle_power, message
+            )
+        elif message == "power_off" and self._power_controller:
+            # Power OFF uses serial command 0x0A (SWITCH OFF)
             import tornado.ioloop
             tornado.ioloop.IOLoop.current().spawn_callback(
                 self._handle_power, message
