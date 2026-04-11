@@ -16,6 +16,7 @@ import tornado.ioloop
 from spe.config import load_config
 from spe.app import make_app
 from spe.serial_handler import SerialHandler
+from spe.power_control import PowerController
 from spe.websocket_handler import AmplifierWebSocket
 
 
@@ -36,8 +37,11 @@ def main() -> None:
         on_state_update=AmplifierWebSocket.broadcast_state,
     )
 
+    power_controller = PowerController(serial_config=config.serial)
+
     AmplifierWebSocket.configure(
         serial_handler=serial_handler,
+        power_controller=power_controller,
         heartbeat=config.polling.heartbeat,
     )
 

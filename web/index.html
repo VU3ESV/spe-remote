@@ -63,6 +63,12 @@
     <div class="chip"><span class="label">LEVEL</span> <span id="levelDisplay">-</span></div>
   </div>
 
+  <!-- Power Control -->
+  <div class="power-controls">
+    <button class="btn btn-power btn-power-on" id="btnPowerOn" onclick="sendPower('power_on')">&#9654; POWER ON</button>
+    <button class="btn btn-power btn-power-off" id="btnPowerOff" onclick="sendPower('power_off')">&#9724; POWER OFF</button>
+  </div>
+
   <!-- Controls -->
   <div class="controls">
     <button class="btn" id="btnOper" onclick="sendCmd('oper')">Operate</button>

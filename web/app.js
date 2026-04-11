@@ -26,7 +26,12 @@
 
     ws.onmessage = (evt) => {
       try {
-        updateUI(JSON.parse(evt.data));
+        const d = JSON.parse(evt.data);
+        if (d.power_result) {
+          handlePowerResult(d);
+        } else {
+          updateUI(d);
+        }
       } catch (e) {
         console.error("Parse error:", e);
       }
@@ -44,6 +49,44 @@
       ws.send(cmd);
     }
   };
+
+  // Power on/off with confirmation and busy state
+  window.sendPower = function (cmd) {
+    const label = cmd === "power_on" ? "POWER ON" : "POWER OFF";
+    if (!confirm(`Are you sure you want to ${label} the amplifier?`)) return;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(cmd);
+      // Set busy state on both buttons
+      document.getElementById("btnPowerOn").classList.add("busy");
+      document.getElementById("btnPowerOff").classList.add("busy");
+      // Auto-clear busy after 5s safety timeout
+      setTimeout(clearPowerBusy, 5000);
+    }
+  };
+
+  function clearPowerBusy() {
+    document.getElementById("btnPowerOn").classList.remove("busy");
+    document.getElementById("btnPowerOff").classList.remove("busy");
+  }
+
+  function handlePowerResult(d) {
+    clearPowerBusy();
+    const alertBar = document.getElementById("alertBar");
+    const action = d.power_result === "power_on" ? "POWER ON" : "POWER OFF";
+    if (d.status === "ok") {
+      alertBar.className = "alert-bar power-ok";
+      alertBar.textContent = `${action} command sent successfully`;
+    } else {
+      alertBar.className = "alert-bar error";
+      alertBar.textContent = `${action} failed — check serial connection`;
+    }
+    // Clear the alert after 4 seconds
+    setTimeout(() => {
+      alertBar.className = "alert-bar clear";
+      alertBar.textContent = "";
+    }, 4000);
+  }
 
   // --- UI Update ---
   function updateUI(d) {
