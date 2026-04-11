@@ -21,6 +21,8 @@ WHITE = HexColor("#ffffff")
 BLACK = HexColor("#000000")
 LIGHT_GREY = HexColor("#f0f0f0")
 MED_GREY = HexColor("#cccccc")
+SUCCESS = HexColor("#4caf50")
+DANGER = HexColor("#c62828")
 
 # Styles
 style_title = ParagraphStyle(
@@ -94,7 +96,7 @@ def build_pdf(output_path):
     story.append(Spacer(1, 20))
     story.append(hr())
     story.append(Spacer(1, 10))
-    story.append(Paragraph("For SPE Expert 1.5K-FA / 2K-FA HF Amplifiers", style_credits))
+    story.append(Paragraph("For SPE Expert 1.3K-FA / 1.5K-FA / 2K-FA HF Amplifiers", style_credits))
     story.append(Spacer(1, 30))
     story.append(Paragraph("Original script by <b>OH2GEK</b>", style_credits))
     story.append(Paragraph("Modernized and extended by <b>VU2CPL</b>", style_credits))
@@ -106,6 +108,7 @@ def build_pdf(output_path):
         ["Platform", "Raspberry Pi / Linux / macOS"],
         ["Interface", "Web browser (any device)"],
         ["Connection", "USB / RS-232 Serial"],
+        ["Protocol", "SPE App Programmer's Guide Rev 1.1"],
     ]
     info_table = Table(info_data, colWidths=[4*cm, 8*cm])
     info_table.setStyle(TableStyle([
@@ -132,10 +135,12 @@ def build_pdf(output_path):
         "4. Configuration",
         "5. Starting the Server",
         "6. Web Interface Guide",
-        "7. Controls Reference",
-        "8. Running as a System Service",
-        "9. WebSocket API",
-        "10. Troubleshooting",
+        "7. Power On / Off Control",
+        "8. Controls Reference",
+        "9. SPE Serial Protocol Reference",
+        "10. Running as a System Service",
+        "11. WebSocket API",
+        "12. Troubleshooting",
     ]
     for item in toc_items:
         story.append(Paragraph(item, style_body))
@@ -153,7 +158,9 @@ def build_pdf(output_path):
     ))
     story.append(Paragraph("Key Features:", style_h2))
     for feat in [
-        "<b>Self-contained</b> - single process serves both the WebSocket API and web UI. No separate web server (Apache, Nginx) needed.",
+        "<b>Power On/Off</b> - remote power control via DTR hardware line (on) and serial command 0x0A (off).",
+        "<b>Full SPE protocol</b> - all 20 commands from the official Application Programmer's Guide Rev 1.1.",
+        "<b>Self-contained</b> - single process serves both the WebSocket API and web UI. No separate web server needed.",
         "<b>Multi-client</b> - multiple browsers and devices can monitor the amplifier simultaneously.",
         "<b>Real-time gauges</b> - SWR, drain current, PA temperature, and voltage displayed with animated arc gauges.",
         "<b>Responsive design</b> - works on desktop, tablet, and mobile screens.",
@@ -171,8 +178,8 @@ def build_pdf(output_path):
     story.append(Paragraph("Hardware:", style_h2))
     for req in [
         "Raspberry Pi (any model - Pi 2, 3, 4, 5, or Zero 2 W) or any Linux/macOS computer",
-        "SPE Expert amplifier (1.5K-FA, 2K-FA, or compatible model)",
-        "USB cable or RS-232 serial connection to the amplifier",
+        "SPE Expert amplifier (1.3K-FA, 1.5K-FA, 2K-FA, or compatible model)",
+        "USB cable (with FTDI adapter) or RS-232 serial connection to the amplifier",
         "Network connection (Ethernet or Wi-Fi)",
     ]:
         story.append(bullet(req))
@@ -216,7 +223,7 @@ def build_pdf(output_path):
 
     story.append(Paragraph("Step 1: Clone the Repository", style_h2))
     story.append(code(
-        "git clone https://github.com/AnonMaoj/spe-remote.git<br/>"
+        "git clone https://github.com/vu2cpl/spe-remote.git<br/>"
         "cd spe-remote"
     ))
 
@@ -327,10 +334,10 @@ def build_pdf(output_path):
         style_body,
     ))
     story.append(code(
-        "2024-01-15 10:30:00 [INFO] spe: Server listening on http://0.0.0.0:8888/<br/>"
-        "2024-01-15 10:30:00 [INFO] spe: Serial port: /dev/ttyUSB0 @ 115200 baud<br/>"
-        "2024-01-15 10:30:00 [INFO] spe.serial_handler: Connecting to /dev/ttyUSB0...<br/>"
-        "2024-01-15 10:30:00 [INFO] spe.serial_handler: Serial connected"
+        "[INFO] spe: Server listening on http://0.0.0.0:8888/<br/>"
+        "[INFO] spe: Serial port: /dev/ttyUSB0 @ 115200 baud<br/>"
+        "[INFO] spe.serial_handler: Connecting...<br/>"
+        "[INFO] spe.serial_handler: Serial connected"
     ))
     story.append(Paragraph(
         "Open your browser and navigate to <b>http://&lt;pi-ip-address&gt;:8888/</b>",
@@ -343,7 +350,7 @@ def build_pdf(output_path):
     story.append(Paragraph("6. Web Interface Guide", style_h1))
     story.append(hr())
     story.append(Paragraph(
-        "The web interface provides a real-time view of the amplifier's status with interactive controls.",
+        "The web interface provides a real-time view of the amplifier status with interactive controls.",
         style_body,
     ))
 
@@ -400,25 +407,57 @@ def build_pdf(output_path):
     story.append(Paragraph("Alert Bar", style_h2))
     story.append(Paragraph(
         "Warning and error messages from the amplifier are displayed at the bottom "
-        "in an orange (warning) or red (error) bar.",
+        "in an orange (warning) or red (error) bar. Power on/off results show in green (success) "
+        "or red (failure) and auto-clear after 4 seconds.",
         style_body,
     ))
 
     story.append(PageBreak())
 
-    # ---- 7. CONTROLS ----
-    story.append(Paragraph("7. Controls Reference", style_h1))
+    # ---- 7. POWER ON/OFF ----
+    story.append(Paragraph("7. Power On / Off Control", style_h1))
     story.append(hr())
-    ctrl_data = [
-        ["Button", "Action", "Description"],
-        ["Operate", "Toggle Operate/Standby", "Switches the amplifier between Operate and Standby modes. Button highlights cyan when in Operate mode."],
-        ["ANT", "Cycle TX Antenna", "Cycles through available TX antenna outputs (ANT 1, ANT 2, etc.)."],
-        ["TUNE", "Start ATU Tuning", "Initiates the internal antenna tuning unit (ATU) cycle. Ensure RF drive is present."],
-        ["INPUT", "Toggle Input", "Switches between available input connectors."],
-        ["GAIN", "Toggle Gain", "Cycles through gain/power level settings."],
+    story.append(Paragraph(
+        "The web interface includes dedicated Power ON and Power OFF buttons at the top of the "
+        "control area. These use different mechanisms as defined by the SPE protocol.",
+        style_body,
+    ))
+
+    story.append(Paragraph("Power ON", style_h2))
+    story.append(Paragraph(
+        "Power ON is performed by toggling the DTR (Data Terminal Ready) hardware line on the "
+        "USB-serial adapter. There is no serial data command for powering on the amplifier. "
+        "The DTR/RTS toggle sequence is based on the original power_spe_on.py script by OH2GEK:",
+        style_body,
+    ))
+    story.append(code(
+        "DTR=1 -> DTR=0 -> RTS=1 -> wait 1s -> DTR=1 -> RTS=0"
+    ))
+    story.append(Paragraph(
+        "After the sequence, the amplifier takes 3 to 4.5 seconds to start up. When DTR is held "
+        "high, the amplifier shows a 'POWER SWITCH HELD BY REMOTE' warning and the front-panel "
+        "power switch is overridden by the remote.",
+        style_note,
+    ))
+
+    story.append(Paragraph("Power OFF", style_h2))
+    story.append(Paragraph(
+        "Power OFF uses the official SPE serial command <b>SWITCH OFF (0x0A)</b> as documented "
+        "in the SPE Application Programmer's Guide Rev 1.1. This is equivalent to pressing the "
+        "front-panel OFF button.",
+        style_body,
+    ))
+    story.append(code(
+        "Packet: 0x55 0x55 0x55 0x01 0x0A 0x0A"
+    ))
+
+    power_data = [
+        ["Action", "Method", "Mechanism"],
+        ["Power ON", "DTR hardware toggle", "USB-serial DTR/RTS line sequence"],
+        ["Power OFF", "Serial command 0x0A", "SWITCH OFF per SPE protocol"],
     ]
-    ctrl_table = Table(ctrl_data, colWidths=[2.5*cm, 3.5*cm, 8*cm])
-    ctrl_table.setStyle(TableStyle([
+    power_table = Table(power_data, colWidths=[3*cm, 4*cm, 7*cm])
+    power_table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -429,6 +468,47 @@ def build_pdf(output_path):
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_GREY]),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(Spacer(1, 6))
+    story.append(power_table)
+
+    story.append(Paragraph("Safety:", style_h2))
+    story.append(Paragraph(
+        "Both Power ON and Power OFF buttons require a browser confirmation dialog before "
+        "executing. The buttons show a shimmer animation while the command is being processed "
+        "and display a success or error result in the alert bar.",
+        style_body,
+    ))
+
+    story.append(PageBreak())
+
+    # ---- 8. CONTROLS ----
+    story.append(Paragraph("8. Controls Reference", style_h1))
+    story.append(hr())
+    ctrl_data = [
+        ["Button", "Command", "Description"],
+        ["POWER ON", "DTR toggle", "Powers on the amplifier via hardware DTR line. Confirmation required."],
+        ["POWER OFF", "0x0A", "Sends SWITCH OFF command to power down the amplifier. Confirmation required."],
+        ["Operate", "0x0D", "Toggles between Operate and Standby modes. Button highlights cyan in Operate."],
+        ["ANT", "0x04", "Cycles through available TX antenna outputs (ANT 1, ANT 2, etc.)."],
+        ["TUNE", "0x09", "Initiates the internal antenna tuning unit (ATU) cycle."],
+        ["INPUT", "0x01", "Switches between available input connectors (IN 1, IN 2)."],
+        ["POWER", "0x0B", "Cycles through power levels: Low, Mid, High."],
+        ["BAND -", "0x02", "Steps down one band (e.g. 40m to 80m)."],
+        ["BAND +", "0x03", "Steps up one band (e.g. 40m to 30m)."],
+    ]
+    ctrl_table = Table(ctrl_data, colWidths=[2.5*cm, 2*cm, 9.5*cm])
+    ctrl_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("TEXTCOLOR", (0, 1), (-1, -1), TEXT_LIGHT),
+        ("GRID", (0, 0), (-1, -1), 0.5, MED_GREY),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_GREY]),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(ctrl_table)
@@ -442,8 +522,129 @@ def build_pdf(output_path):
 
     story.append(PageBreak())
 
-    # ---- 8. SYSTEMD SERVICE ----
-    story.append(Paragraph("8. Running as a System Service", style_h1))
+    # ---- 9. SPE PROTOCOL REFERENCE ----
+    story.append(Paragraph("9. SPE Serial Protocol Reference", style_h1))
+    story.append(hr())
+    story.append(Paragraph(
+        "Based on the <b>SPE Application Programmer's Guide Rev 1.1</b> for Expert 1.3K-FA / "
+        "1.5K-FA / 2K-FA. Communication is asynchronous, 8N1, up to 115200 baud (auto-adapts).",
+        style_body,
+    ))
+
+    story.append(Paragraph("Packet Format", style_h2))
+    story.append(code(
+        "0x55 0x55 0x55 [CNT] [DATA...] [CHK]<br/>"
+        "<br/>"
+        "CNT = number of data bytes (checksum excluded)<br/>"
+        "CHK = modulo-256 sum of DATA bytes<br/>"
+        "For single-byte commands: CNT=0x01, CHK=DATA"
+    ))
+
+    story.append(Paragraph("Complete Command Set", style_h2))
+    proto_data = [
+        ["Hex", "Command", "Description"],
+        ["0x01", "INPUT", "Toggle input port"],
+        ["0x02", "BAND -", "Band down"],
+        ["0x03", "BAND +", "Band up"],
+        ["0x04", "ANTENNA", "Cycle TX antenna"],
+        ["0x05", "L-", "ATU inductance minus"],
+        ["0x06", "L+", "ATU inductance plus"],
+        ["0x07", "C-", "ATU capacitance minus"],
+        ["0x08", "C+", "ATU capacitance plus"],
+        ["0x09", "TUNE", "Start ATU tuning"],
+        ["0x0A", "SWITCH OFF", "Power OFF the amplifier"],
+        ["0x0B", "POWER", "Toggle power level (L/M/H)"],
+        ["0x0C", "DISPLAY", "Display toggle"],
+        ["0x0D", "OPERATE", "Toggle Operate/Standby"],
+        ["0x0E", "CAT", "CAT mode"],
+        ["0x0F", "LEFT ARROW", "Menu navigation left"],
+        ["0x10", "RIGHT ARROW", "Menu navigation right"],
+        ["0x11", "SET", "Menu enter/set"],
+        ["0x82", "BACKLIGHT ON", "Turn display backlight on"],
+        ["0x83", "BACKLIGHT OFF", "Turn display backlight off"],
+        ["0x90", "STATUS", "Request status string"],
+    ]
+    proto_table = Table(proto_data, colWidths=[2*cm, 3.5*cm, 8.5*cm])
+    proto_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (0, -1), "Courier"),
+        ("FONTNAME", (1, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("TEXTCOLOR", (0, 1), (-1, -1), TEXT_LIGHT),
+        ("GRID", (0, 0), (-1, -1), 0.5, MED_GREY),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_GREY]),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(Spacer(1, 4))
+    story.append(proto_table)
+
+    story.append(PageBreak())
+
+    story.append(Paragraph("Status String Fields", style_h2))
+    story.append(Paragraph(
+        "The amplifier returns a 67-character ASCII comma-separated status string with 19 fields:",
+        style_body,
+    ))
+    status_data = [
+        ["Field", "Length", "Contents"],
+        ["ID", "3", "20K (2K-FA) or 13K (1.3K-FA)"],
+        ["Stby/Oper", "1", "S (Standby) or O (Operate)"],
+        ["RX/TX", "1", "R (Receive) or T (Transmit)"],
+        ["Memory", "1", "A, B, or x"],
+        ["Input", "1", "1 or 2"],
+        ["Band", "2", "00 (160m) to 11 (4m)"],
+        ["TX Ant + ATU", "2", "0-6, suffix: t/b/a"],
+        ["RX Ant", "2", "Antenna number or 0r"],
+        ["Power Level", "1", "L (Low), M (Mid), H (High)"],
+        ["Output Power", "4", "Watts (0000 on RX)"],
+        ["SWR ATU", "5", "VSWR before ATU"],
+        ["SWR ANT", "5", "VSWR at antenna"],
+        ["V PA", "4", "Supply voltage"],
+        ["I PA", "4", "Drain current"],
+        ["Temp Upper", "3", "Heatsink temp (C or F)"],
+        ["Temp Lower", "3", "Lower heatsink (2K-FA only)"],
+        ["Temp Combiner", "3", "Combiner temp (2K-FA only)"],
+        ["Warnings", "1", "Warning code (N = none)"],
+        ["Alarms", "1", "Alarm code (N = none)"],
+    ]
+    status_table = Table(status_data, colWidths=[3.5*cm, 1.5*cm, 9*cm])
+    status_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("TEXTCOLOR", (0, 1), (-1, -1), TEXT_LIGHT),
+        ("GRID", (0, 0), (-1, -1), 0.5, MED_GREY),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_GREY]),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(Spacer(1, 4))
+    story.append(status_table)
+
+    story.append(Paragraph("Warning Codes:", style_h2))
+    story.append(Paragraph(
+        "<b>M</b>=Alarm, <b>A</b>=No antenna, <b>S</b>=SWR, <b>B</b>=No band, "
+        "<b>P</b>=Power limit, <b>O</b>=Overheat, <b>Y</b>=ATU N/A, <b>W</b>=Tune no power, "
+        "<b>K</b>=ATU bypass, <b>R</b>=Remote hold, <b>T</b>=Combiner heat, "
+        "<b>C</b>=Combiner fault, <b>N</b>=None",
+        style_body,
+    ))
+    story.append(Paragraph("Alarm Codes:", style_h2))
+    story.append(Paragraph(
+        "<b>S</b>=SWR limit, <b>A</b>=Amp protection, <b>D</b>=Overdrive, "
+        "<b>H</b>=Excess heat, <b>C</b>=Combiner fault, <b>N</b>=None",
+        style_body,
+    ))
+
+    story.append(PageBreak())
+
+    # ---- 10. SYSTEMD SERVICE ----
+    story.append(Paragraph("10. Running as a System Service", style_h1))
     story.append(hr())
     story.append(Paragraph(
         "To start the server automatically on boot, create a systemd service file:",
@@ -488,8 +689,8 @@ def build_pdf(output_path):
 
     story.append(PageBreak())
 
-    # ---- 9. WEBSOCKET API ----
-    story.append(Paragraph("9. WebSocket API", style_h1))
+    # ---- 11. WEBSOCKET API ----
+    story.append(Paragraph("11. WebSocket API", style_h1))
     story.append(hr())
     story.append(Paragraph(
         "The server exposes a WebSocket endpoint for custom clients and integrations.",
@@ -503,9 +704,13 @@ def build_pdf(output_path):
         '{<br/>'
         '&nbsp;&nbsp;"op_status": "Oper",<br/>'
         '&nbsp;&nbsp;"tx_status": "TX",<br/>'
+        '&nbsp;&nbsp;"input": "1",<br/>'
         '&nbsp;&nbsp;"band": "80m",<br/>'
+        '&nbsp;&nbsp;"tx_antenna": "1",<br/>'
+        '&nbsp;&nbsp;"p_level": "10",<br/>'
         '&nbsp;&nbsp;"p_out": "1353",<br/>'
         '&nbsp;&nbsp;"swr": "1.54",<br/>'
+        '&nbsp;&nbsp;"aswr": "1.12",<br/>'
         '&nbsp;&nbsp;"voltage": "54.6",<br/>'
         '&nbsp;&nbsp;"drain": "27.3",<br/>'
         '&nbsp;&nbsp;"pa_temp": "26",<br/>'
@@ -514,16 +719,31 @@ def build_pdf(output_path):
         '}'
     ))
 
+    story.append(Paragraph("Received JSON (power action result):", style_h2))
+    story.append(code(
+        '{<br/>'
+        '&nbsp;&nbsp;"power_result": "power_on",<br/>'
+        '&nbsp;&nbsp;"status": "ok"<br/>'
+        '}'
+    ))
+
     story.append(Paragraph("Send Commands (text messages):", style_h2))
     cmd_data = [
         ["Command", "Action"],
+        ["power_on", "Power ON via DTR toggle"],
+        ["power_off", "Power OFF via serial cmd 0x0A"],
         ["oper", "Toggle Operate/Standby"],
         ["antenna", "Cycle TX antenna"],
-        ["input", "Toggle input"],
+        ["input", "Toggle input port"],
         ["tune", "Start ATU tuning"],
-        ["gain", "Toggle gain"],
+        ["power_level", "Toggle power level (L/M/H)"],
+        ["band_up", "Band up"],
+        ["band_dn", "Band down"],
+        ["display", "Toggle display"],
+        ["backlight_on", "Backlight on"],
+        ["backlight_off", "Backlight off"],
     ]
-    cmd_table = Table(cmd_data, colWidths=[4*cm, 8*cm])
+    cmd_table = Table(cmd_data, colWidths=[4*cm, 10*cm])
     cmd_table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTNAME", (0, 1), (0, -1), "Courier"),
@@ -534,16 +754,16 @@ def build_pdf(output_path):
         ("TEXTCOLOR", (0, 1), (-1, -1), TEXT_LIGHT),
         ("GRID", (0, 0), (-1, -1), 0.5, MED_GREY),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_GREY]),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(Spacer(1, 6))
     story.append(cmd_table)
 
     story.append(PageBreak())
 
-    # ---- 10. TROUBLESHOOTING ----
-    story.append(Paragraph("10. Troubleshooting", style_h1))
+    # ---- 12. TROUBLESHOOTING ----
+    story.append(Paragraph("12. Troubleshooting", style_h1))
     story.append(hr())
 
     issues = [
@@ -561,6 +781,12 @@ def build_pdf(output_path):
         ("Multiple /dev/ttyUSB devices",
          "Use the /dev/serial/by-id/ path which is unique to each USB-serial adapter. "
          "This prevents confusion when multiple USB devices are connected."),
+        ("Power ON not working",
+         "Verify your FTDI USB-serial adapter supports DTR line control. Check with dmesg "
+         "that the adapter is recognized. The DTR toggle sequence requires hardware DTR support."),
+        ("'POWER SWITCH HELD BY REMOTE' warning",
+         "This is normal behavior when DTR is held high after a remote power on. The amplifier's "
+         "front-panel power switch is overridden while the remote has control."),
         ("Server crashes on startup",
          "Check the log output for errors. Common causes: wrong Python version (need 3.9+), "
          "missing dependencies (re-run ./setup.sh), or serial port already in use by another program."),
@@ -579,7 +805,8 @@ def build_pdf(output_path):
     story.append(hr())
     story.append(Spacer(1, 12))
     story.append(Paragraph(
-        "For additional help, open an issue on the GitHub repository.",
+        "For additional help, open an issue on the GitHub repository:<br/>"
+        "https://github.com/vu2cpl/spe-remote",
         style_body,
     ))
     story.append(Spacer(1, 30))
