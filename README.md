@@ -94,13 +94,12 @@ dmesg | grep ttyUSB
 
 Using `/dev/serial/by-id/...` paths is recommended — they persist across reboots unlike `/dev/ttyUSB0`.
 
-### 5. Start the Server
+### 5. Start the Server in Interactive Mode
 
 ```bash
 ./run.sh
 ```
-#### 5.1. Start the Server in a Detached Mode 
-
+#### 5.1. Start the Server in a Detached Mode , logs will append in the nohup.out file.
 ```bash
 nohup ./run.sh &
 ```
