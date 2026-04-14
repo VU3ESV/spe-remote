@@ -58,6 +58,19 @@ def main() -> None:
     # Graceful shutdown
     def shutdown(sig, frame):
         logger.info("Shutting down...")
+        # Schedule serial handler stop on the asyncio loop
+        try:
+            loop.call_soon_threadsafe(loop.create_task, serial_handler.stop())
+        except Exception:
+            # Fallback: ensure a stop task is scheduled
+            loop.call_soon_threadsafe(lambda: loop.create_task(serial_handler.stop()))
+
+        # Stop Tornado IOLoop in a signal-safe way
+        tornado.ioloop.IOLoop.current().add_callback_from_signal(
+            tornado.ioloop.IOLoop.current().stop
+        )
+
+        # Also stop the asyncio loop after pending tasks complete
         loop.call_soon_threadsafe(loop.stop)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -69,7 +82,19 @@ def main() -> None:
     try:
         tornado.ioloop.IOLoop.current().start()
     finally:
-        loop.run_until_complete(serial_handler.stop())
+        # Ensure serial task is cancelled if still running
+        try:
+            if not serial_task.done():
+                serial_task.cancel()
+        except Exception:
+            pass
+
+        # Make a best-effort to stop serial handler and close resources
+        try:
+            loop.run_until_complete(serial_handler.stop())
+        except Exception:
+            logger.exception("Error while stopping serial handler")
+
         logger.info("Server stopped")
 
 

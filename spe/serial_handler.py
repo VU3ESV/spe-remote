@@ -59,9 +59,26 @@ class SerialHandler:
 
     async def stop(self) -> None:
         self._running = False
+        # Close the writer/transport cleanly and clear references
         if self._writer:
-            self._writer.close()
-            self._connected = False
+            try:
+                self._writer.close()
+                wait_closed = getattr(self._writer, "wait_closed", None)
+                if callable(wait_closed):
+                    try:
+                        await wait_closed()
+                    except Exception:
+                        # Some transports may raise on wait; fall back to short sleep
+                        await asyncio.sleep(0.05)
+                else:
+                    # Best-effort flush if wait_closed not available
+                    await asyncio.sleep(0.05)
+            except Exception:
+                logger.exception("Error closing serial writer")
+
+        self._writer = None
+        self._reader = None
+        self._connected = False
 
     def send_command(self, command: str) -> None:
         cmd_bytes = COMMANDS.get(command)
