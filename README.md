@@ -99,6 +99,11 @@ Using `/dev/serial/by-id/...` paths is recommended — they persist across reboo
 ```bash
 ./run.sh
 ```
+#### 5.1. Start the Server in a Detached Mode 
+
+```bash
+nohup ./run.sh &
+```
 
 ### 6. Open the Web Interface
 
