@@ -1,23 +1,34 @@
 """Async serial handler for SPE amplifier communication.
 
-Parses two response types on the same byte stream:
-  * CSV status frames (sync ``AA AA AA`` + CNT=0x43 + 67 bytes ASCII + checksum + CRLF)
-  * RCU LCD display frames (sync ``AA AA AA`` + type=0x6A + variable-length payload,
-    terminated by the next ``AA AA AA`` sync or a quiet period)
+Uses plain pyserial (NOT serial_asyncio) on a background daemon thread for
+reads. The thread pushes raw chunks into an asyncio queue via
+``call_soon_threadsafe``; the asyncio event loop drains the queue and does
+the framing. Writes go through a ``threading.Lock``-guarded wrapper so
+coroutines never interleave packets on the wire.
 
-CSV frames feed ``on_state_update``; RCU frames feed ``on_rcu_frame`` which the
-WebSocket handler forwards as binary messages so MacExpert (and any future
-client) can render the amp's LCD in real time.
+Why not serial_asyncio: its internal ``_read_ready`` callback routinely
+raises ``SerialException("readiness to read but returned no data")`` on
+USB-serial adapters under moderate traffic, which bounces the port and
+stalls RCU frame delivery. The blocking ``serial.Serial.read(...)`` call
+used here never hits that code path, so the port stays up even under the
+full RCU stream.
+
+Parses two response types on the same byte stream:
+  * CSV status frames (``AA AA AA`` + CNT=0x43 + 67 bytes + checksum + CRLF)
+  * RCU LCD display frames (``AA AA AA`` + type=0x6A + variable payload,
+    terminated by the next sync or a quiet period)
+
+CSV frames feed ``on_state_update``; RCU frames feed ``on_rcu_frame``.
 """
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Callable, Optional
 
 import serial
 import serial.tools.list_ports
-import serial_asyncio
 
 from spe.config import SerialConfig, PollingConfig
 from spe.protocol import (
@@ -28,25 +39,37 @@ from spe.protocol import (
 
 logger = logging.getLogger(__name__)
 
-# How often to re-issue the RCU_OFF -> RCU_ON cycle while RCU is enabled.
-# 600ms keeps the display fresh without flooding the FTDI USB-serial. The
-# Pi's pyserial wrapper gets spurious "readiness but no data" errors when
-# the bus is saturated; a calmer tick rate keeps the port stable.
-_RCU_TICK_INTERVAL = 0.6   # seconds
-_RCU_OFF_ON_GAP = 0.06     # seconds
+# RCU OFF->ON cycle cadence. Calmer values keep the USB-serial relaxed;
+# the amp only emits one frame per display change so over-ticking just
+# generates redundant traffic.
+_RCU_TICK_INTERVAL = 0.5  # seconds
+_RCU_OFF_ON_GAP = 0.05    # seconds
 
-# Flush an unterminated RCU frame if no new bytes arrive for this long. The
-# 1.5K-FA only emits a frame when the LCD changes, so we can't always rely on a
-# closing sync to delimit one.
-_RCU_QUIET_FLUSH = 0.25   # seconds
+# Force-flush an unterminated RCU frame if no new bytes arrive for this
+# long. Covers static screens where the amp sends one frame and then goes
+# silent until the next tick.
+_RCU_QUIET_FLUSH = 0.3    # seconds
 
-# Cap how big we let the receive buffer grow before dropping. Observed RCU
-# frame is ~371 bytes; 2048 is plenty for several queued frames.
+# Cap the receive buffer to prevent unbounded growth on a stuck parser.
 _MAX_BUFFER = 4096
+
+# Blocking serial read timeout. Balances responsiveness against CPU churn
+# in the reader thread. 100 ms is plenty — chunks arrive as fast as the
+# amp sends them.
+_READ_TIMEOUT = 0.1
 
 
 class SerialHandler:
-    """Manages serial communication with the SPE amplifier."""
+    """Manages serial communication with the SPE amplifier.
+
+    Threading model:
+      * Asyncio loop owns: command queue, frame parsing, callbacks.
+      * Daemon thread owns: blocking reads from the serial port.
+      * The thread posts byte chunks to asyncio via ``call_soon_threadsafe``.
+      * Writes are synchronous from asyncio (pyserial's Serial.write is
+        fast) but guarded by ``self._write_lock`` (threading.Lock) so the
+        reader thread never sees a half-written packet.
+    """
 
     def __init__(
         self,
@@ -58,28 +81,22 @@ class SerialHandler:
         self.serial_config = serial_config
         self.polling_config = polling_config
         self.on_state_update = on_state_update
-        # Optional — only wired when a WebSocket client might want RCU. Server
-        # always runs the RCU ticker so the first subscriber gets data without
-        # a cold-start delay.
         self.on_rcu_frame = on_rcu_frame
 
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
+        self._port: serial.Serial | None = None
         self._connected = False
-        self._command_queue: asyncio.Queue[bytes] = asyncio.Queue()
-        self._state = AmplifierState()
         self._running = False
+        self._state = AmplifierState()
 
-        # Rolling receive buffer for byte-stream framing.
+        self._command_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._write_lock = threading.Lock()
+
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._stop_reader = threading.Event()
+
         self._buffer = bytearray()
-        # Timestamp of last incoming byte; used to force-flush a stalled RCU
-        # frame when the amp goes quiet.
         self._last_byte_at: float = 0.0
-        # Serialises all writes to the serial transport. Without this, three
-        # concurrent coroutines (command loop, CSV polling, RCU ticker) can
-        # each call writer.write/drain and their frames interleave on the
-        # wire — the amp then sees mangled command packets and ignores them.
-        self._write_lock: asyncio.Lock | None = None
 
     @property
     def state(self) -> AmplifierState:
@@ -89,82 +106,34 @@ class SerialHandler:
     def connected(self) -> bool:
         return self._connected
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def start(self) -> None:
         self._running = True
+        self._loop = asyncio.get_running_loop()
         while self._running:
             try:
-                await self._connect()
+                await self._open_port()
                 await self._run_loop()
             except (serial.SerialException, OSError) as e:
                 logger.error(f"Serial error: {e}")
             finally:
-                # Always tear down the port cleanly between reconnects,
-                # otherwise stale tasks in the old generation keep writing
-                # to a dead writer and we see "multiple access on port".
-                await self._teardown_port()
+                self._teardown_port()
             if self._running:
                 logger.info("Reconnecting in 3 seconds...")
                 await asyncio.sleep(3)
 
-    async def _teardown_port(self) -> None:
-        """Close writer, drop references, reset connection state. Safe to
-        call repeatedly — idempotent. Also drops any queued user commands
-        so stale key presses don't fire on a different screen after the
-        reconnect completes (otherwise the user's SET/arrow clicks that
-        accumulated during the outage would execute on whatever menu the
-        amp settles on, not the one they were aiming at)."""
-        self._connected = False
-        writer = self._writer
-        self._reader = None
-        self._writer = None
-        self._write_lock = None
-        try:
-            while not self._command_queue.empty():
-                self._command_queue.get_nowait()
-        except Exception:
-            pass
-        if writer is None:
-            return
-        try:
-            writer.close()
-            wait_closed = getattr(writer, "wait_closed", None)
-            if callable(wait_closed):
-                try:
-                    await asyncio.wait_for(wait_closed(), timeout=1.0)
-                except (asyncio.TimeoutError, Exception):
-                    pass
-        except Exception:
-            pass
-
     async def stop(self) -> None:
         self._running = False
-        # Close the writer/transport cleanly and clear references.
-        if self._writer:
-            # Best-effort: ask amp to stop emitting RCU frames before tearing
-            # down the port so a subsequent reconnect isn't chasing stale
-            # frames.
+        self._stop_reader.set()
+        if self._port and self._port.is_open:
             try:
-                await self._write(CMD_RCU_OFF)
+                self._safe_write(CMD_RCU_OFF)
             except Exception:
                 pass
-            try:
-                self._writer.close()
-                wait_closed = getattr(self._writer, "wait_closed", None)
-                if callable(wait_closed):
-                    try:
-                        await wait_closed()
-                    except Exception:
-                        # Some transports may raise on wait; fall back to short sleep
-                        await asyncio.sleep(0.05)
-                else:
-                    # Best-effort flush if wait_closed not available
-                    await asyncio.sleep(0.05)
-            except Exception:
-                logger.exception("Error closing serial writer")
-
-        self._writer = None
-        self._reader = None
-        self._connected = False
+        self._teardown_port()
 
     def send_command(self, command: str) -> None:
         cmd_bytes = COMMANDS.get(command)
@@ -174,142 +143,192 @@ class SerialHandler:
         else:
             logger.warning(f"Unknown command: {command}")
 
-    async def _connect(self) -> None:
+    # ------------------------------------------------------------------
+    # Port open / close
+    # ------------------------------------------------------------------
+
+    async def _open_port(self) -> None:
         logger.info(
             f"Connecting to {self.serial_config.port} "
             f"at {self.serial_config.baudrate} baud..."
         )
-        self._reader, self._writer = await serial_asyncio.open_serial_connection(
-            url=self.serial_config.port,
+        port = serial.Serial(
+            port=self.serial_config.port,
             baudrate=self.serial_config.baudrate,
+            timeout=_READ_TIMEOUT,
+            write_timeout=1.0,
         )
+        self._port = port
         self._connected = True
-        self._write_lock = asyncio.Lock()
-        logger.info("Serial connected")
-
-        # Reset framing buffer for the new connection.
         self._buffer.clear()
         self._last_byte_at = 0.0
+        logger.info("Serial connected")
 
-        # Initial status request + enable RCU so the amp starts pushing LCD
-        # frames as soon as the display state changes.
-        await self._write(CMD_REQUEST)
-        await self._write(CMD_RCU_ON)
+        # Fire up the reader thread.
+        self._stop_reader.clear()
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name="spe-serial-reader",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+        # Initial status request + enable RCU.
+        self._safe_write(CMD_REQUEST)
+        self._safe_write(CMD_RCU_ON)
+
+    def _teardown_port(self) -> None:
+        """Close the port and signal the reader thread to exit. Idempotent."""
+        self._connected = False
+        self._stop_reader.set()
+
+        # Drop queued user commands so stale presses don't fire on a
+        # different menu after the reconnect completes.
+        try:
+            while not self._command_queue.empty():
+                self._command_queue.get_nowait()
+        except Exception:
+            pass
+
+        port = self._port
+        self._port = None
+        if port is not None:
+            try:
+                if port.is_open:
+                    port.close()
+            except Exception:
+                pass
+
+        # Don't join the reader thread here — we're potentially on the
+        # same thread or need to avoid blocking the event loop. The
+        # thread exits naturally once its serial handle is closed.
+
+    # ------------------------------------------------------------------
+    # Write path (asyncio side, but synchronous)
+    # ------------------------------------------------------------------
+
+    def _safe_write(self, payload: bytes) -> None:
+        port = self._port
+        if port is None or not port.is_open:
+            return
+        with self._write_lock:
+            try:
+                port.write(payload)
+                port.flush()
+            except (serial.SerialException, OSError) as e:
+                logger.warning(f"Serial write failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Reader thread
+    # ------------------------------------------------------------------
+
+    def _reader_loop(self) -> None:
+        port = self._port
+        loop = self._loop
+        if port is None or loop is None:
+            return
+        while not self._stop_reader.is_set():
+            try:
+                data = port.read(256)
+            except (serial.SerialException, OSError) as e:
+                logger.error(f"Serial read failed: {e}")
+                # Signal the main loop to reconnect.
+                loop.call_soon_threadsafe(self._signal_disconnect)
+                return
+            if not data:
+                # Timeout with no data — not an error, just continue.
+                continue
+            loop.call_soon_threadsafe(self._ingest_chunk, bytes(data))
+
+    def _signal_disconnect(self) -> None:
+        """Called on the asyncio loop when the reader thread has bailed.
+        Tearing down the port here causes ``_run_loop`` to exit which kicks
+        off a reconnect from ``start``'s outer loop."""
+        self._stop_reader.set()
+        # Closing the port makes any pending write raise, and the run loop
+        # tasks will finish naturally.
+        port = self._port
+        if port is not None:
+            try:
+                if port.is_open:
+                    port.close()
+            except Exception:
+                pass
+
+    def _ingest_chunk(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self._buffer.extend(chunk)
+        self._last_byte_at = time.monotonic()
+        if len(self._buffer) > _MAX_BUFFER:
+            logger.warning("Receive buffer overflowed, dropping stale bytes")
+            self._buffer.clear()
+            return
+        self._drain_buffer()
+
+    # ------------------------------------------------------------------
+    # Asyncio background loops
+    # ------------------------------------------------------------------
 
     async def _run_loop(self) -> None:
-        read_task = asyncio.create_task(self._read_serial())
         poll_task = asyncio.create_task(self._poll_loop())
         cmd_task = asyncio.create_task(self._command_loop())
         rcu_task = asyncio.create_task(self._rcu_tick_loop())
         flush_task = asyncio.create_task(self._quiet_flush_loop())
+        watchdog_task = asyncio.create_task(self._connection_watchdog())
 
-        tasks = [read_task, poll_task, cmd_task, rcu_task, flush_task]
+        tasks = [poll_task, cmd_task, rcu_task, flush_task, watchdog_task]
         try:
             done, pending = await asyncio.wait(
                 tasks,
-                return_when=asyncio.FIRST_EXCEPTION,
+                return_when=asyncio.FIRST_COMPLETED,
             )
             for task in done:
-                task.result()
+                exc = task.exception()
+                if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                    raise exc
         finally:
             for task in tasks:
                 task.cancel()
+            # Await cancellations so they don't log "was never retrieved".
+            for task in tasks:
                 try:
                     await task
-                except asyncio.CancelledError:
+                except BaseException:
                     pass
 
-    async def _read_serial(self) -> None:
-        """Byte-stream read loop. Accumulates into self._buffer, then calls
-        _drain_buffer to emit any complete CSV or RCU frames."""
-        empty_reads = 0
-        while self._running and self._reader:
-            try:
-                chunk = await self._reader.read(256)
-            except serial.SerialException as e:
-                # pyserial's asyncio wrapper can emit "device reports
-                # readiness to read but returned no data" transiently on
-                # USB-serial when the kernel's poll() flags the port
-                # readable but the actual read hits 0 bytes. Treat as a
-                # short glitch up to 10x before giving up; real disconnects
-                # produce repeated errors and still escalate after the
-                # retries exhaust.
-                empty_reads += 1
-                if empty_reads >= 10:
-                    raise
-                await asyncio.sleep(0.05)
-                continue
-            if not chunk:
-                empty_reads += 1
-                if empty_reads >= 10:
-                    raise serial.SerialException("Serial connection lost")
-                await asyncio.sleep(0.05)
-                continue
-            empty_reads = 0
-            self._buffer.extend(chunk)
-            self._last_byte_at = time.monotonic()
-            if len(self._buffer) > _MAX_BUFFER:
-                logger.warning(
-                    "Receive buffer overflowed, dropping stale bytes"
-                )
-                self._buffer.clear()
-            self._drain_buffer()
-
-    async def _write(self, payload: bytes) -> None:
-        """Write to the serial transport under the write lock so no two
-        coroutines can interleave packets on the wire."""
-        writer = self._writer
-        lock = self._write_lock
-        if writer is None or lock is None:
-            return
-        async with lock:
-            writer.write(payload)
-            await writer.drain()
+    async def _connection_watchdog(self) -> None:
+        """Returns (exits the _run_loop) once the port has been torn down
+        by a reader-thread error. Keeps the outer reconnect logic simple."""
+        while self._running:
+            if self._port is None or not self._port.is_open:
+                return
+            await asyncio.sleep(0.25)
 
     async def _poll_loop(self) -> None:
-        while self._running and self._writer:
+        while self._running:
             interval = (
                 self.polling_config.tx_interval
                 if self._state.is_active
                 else self.polling_config.idle_interval
             )
             await asyncio.sleep(interval)
-
             if self._command_queue.empty():
-                await self._write(CMD_REQUEST)
+                self._safe_write(CMD_REQUEST)
 
     async def _command_loop(self) -> None:
-        while self._running and self._writer:
+        while self._running:
             cmd = await self._command_queue.get()
-            logger.debug(f"Writing command: {cmd.hex()}")
-            await self._write(cmd)
-            # CSV polling happens on its own loop and the RCU ticker will
-            # pick up the post-command frame within one tick; avoid extra
-            # writes here so the USB-serial stays calm.
+            self._safe_write(cmd)
 
     async def _rcu_tick_loop(self) -> None:
-        """Periodic RCU OFF -> ON cycle so the amp emits a fresh LCD frame
-        every ~400ms. Matches MacExpert's direct-serial behaviour. The OFF
-        resets the amp's "last reported state" marker; the subsequent ON
-        therefore always triggers a frame, even when the display is static."""
-        while self._running and self._writer:
+        while self._running:
             await asyncio.sleep(_RCU_TICK_INTERVAL)
-            if not self._writer:
-                return
-            try:
-                await self._write(CMD_RCU_OFF)
-                await asyncio.sleep(_RCU_OFF_ON_GAP)
-                if not self._writer:
-                    return
-                await self._write(CMD_RCU_ON)
-            except Exception as e:
-                logger.warning(f"RCU tick failed: {e}")
-                return
+            self._safe_write(CMD_RCU_OFF)
+            await asyncio.sleep(_RCU_OFF_ON_GAP)
+            self._safe_write(CMD_RCU_ON)
 
     async def _quiet_flush_loop(self) -> None:
-        """Flush an unterminated RCU frame from the buffer if no new bytes
-        have arrived recently. Covers the case where the amp emits a frame
-        and then goes silent (common on static screens between RCU ticks)."""
         while self._running:
             await asyncio.sleep(_RCU_QUIET_FLUSH / 2)
             if not self._buffer:
@@ -321,21 +340,17 @@ class SerialHandler:
             self._flush_open_rcu_frame()
 
     # ------------------------------------------------------------------
-    # Frame extraction
+    # Frame extraction (same as the serial_asyncio version)
     # ------------------------------------------------------------------
 
     def _drain_buffer(self) -> None:
-        """Repeatedly pull complete frames out of self._buffer. Stops when no
-        more complete frames can be extracted."""
         while True:
             sync = self._find_sync(0)
             if sync is None:
-                # No sync found — discard leading garbage to keep buffer small.
                 if len(self._buffer) > 3:
                     del self._buffer[:-3]
                 return
             if sync > 0:
-                # Drop bytes before the first sync.
                 del self._buffer[:sync]
             if len(self._buffer) < 4:
                 return
@@ -343,12 +358,11 @@ class SerialHandler:
             marker = self._buffer[3]
             if marker == RESP_STATUS_CNT:
                 if not self._consume_csv_frame():
-                    return  # Need more bytes
+                    return
             elif marker == RESP_RCU_TYPE:
                 if not self._consume_rcu_frame():
-                    return  # Need more bytes
+                    return
             else:
-                # Unknown packet type. Skip this sync and keep scanning.
                 del self._buffer[:1]
 
     def _find_sync(self, start: int) -> int | None:
@@ -362,17 +376,13 @@ class SerialHandler:
         return None
 
     def _consume_csv_frame(self) -> bool:
-        """CSV status: 3 sync + 1 CNT + 67 data + 2 checksum + 2 CRLF = 75 bytes."""
+        """CSV: 3 sync + 1 CNT + 67 data + 2 checksum + 2 CRLF = 75 bytes."""
         length = self._buffer[3]
         total = 3 + 1 + length + 2 + 2
         if len(self._buffer) < total:
             return False
-
-        data_start = 4
-        data_end = data_start + length
-        payload = bytes(self._buffer[data_start:data_end])
+        payload = bytes(self._buffer[4:4 + length])
         del self._buffer[:total]
-
         try:
             line = payload.decode("ascii", errors="replace")
             state = parse_status(line)
@@ -384,23 +394,16 @@ class SerialHandler:
         return True
 
     def _consume_rcu_frame(self) -> bool:
-        """RCU display frame: sync + 0x6A + payload, terminated by next sync.
-        Returns True if a frame was consumed, False if we need more bytes to
-        locate the terminating sync."""
+        """RCU: sync + 0x6A + payload; payload ends at next sync."""
         next_sync = self._find_sync(4)
         if next_sync is None:
-            # Can't delimit yet. Let the quiet-flush loop handle it if the
-            # amp goes silent.
             return False
-
         payload = bytes(self._buffer[4:next_sync])
         del self._buffer[:next_sync]
         self._emit_rcu_frame(payload)
         return True
 
     def _flush_open_rcu_frame(self) -> None:
-        """Force-emit any unterminated 0x6A frame in the buffer. Called when
-        the amp has gone quiet and no follow-on sync is coming."""
         if len(self._buffer) < 4:
             return
         if not (
