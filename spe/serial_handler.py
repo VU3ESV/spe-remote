@@ -95,10 +95,35 @@ class SerialHandler:
                 await self._run_loop()
             except (serial.SerialException, OSError) as e:
                 logger.error(f"Serial error: {e}")
-                self._connected = False
-                if self._running:
-                    logger.info("Reconnecting in 3 seconds...")
-                    await asyncio.sleep(3)
+            finally:
+                # Always tear down the port cleanly between reconnects,
+                # otherwise stale tasks in the old generation keep writing
+                # to a dead writer and we see "multiple access on port".
+                await self._teardown_port()
+            if self._running:
+                logger.info("Reconnecting in 3 seconds...")
+                await asyncio.sleep(3)
+
+    async def _teardown_port(self) -> None:
+        """Close writer, drop references, reset connection state. Safe to
+        call repeatedly — idempotent."""
+        self._connected = False
+        writer = self._writer
+        self._reader = None
+        self._writer = None
+        self._write_lock = None
+        if writer is None:
+            return
+        try:
+            writer.close()
+            wait_closed = getattr(writer, "wait_closed", None)
+            if callable(wait_closed):
+                try:
+                    await asyncio.wait_for(wait_closed(), timeout=1.0)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+        except Exception:
+            pass
 
     async def stop(self) -> None:
         self._running = False
@@ -186,10 +211,29 @@ class SerialHandler:
     async def _read_serial(self) -> None:
         """Byte-stream read loop. Accumulates into self._buffer, then calls
         _drain_buffer to emit any complete CSV or RCU frames."""
+        empty_reads = 0
         while self._running and self._reader:
-            chunk = await self._reader.read(256)
+            try:
+                chunk = await self._reader.read(256)
+            except serial.SerialException as e:
+                # pyserial's asyncio wrapper can emit "device reports
+                # readiness to read but returned no data" transiently on
+                # USB-serial when the kernel's poll() flags the port
+                # readable but the actual read hits 0 bytes. Treat as a
+                # short glitch up to 3x before giving up; real disconnects
+                # produce repeated errors and escalate cleanly.
+                empty_reads += 1
+                if empty_reads >= 3:
+                    raise
+                await asyncio.sleep(0.05)
+                continue
             if not chunk:
-                raise serial.SerialException("Serial connection lost")
+                empty_reads += 1
+                if empty_reads >= 3:
+                    raise serial.SerialException("Serial connection lost")
+                await asyncio.sleep(0.05)
+                continue
+            empty_reads = 0
             self._buffer.extend(chunk)
             self._last_byte_at = time.monotonic()
             if len(self._buffer) > _MAX_BUFFER:
