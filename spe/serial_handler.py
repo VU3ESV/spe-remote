@@ -227,17 +227,37 @@ class SerialHandler:
         loop = self._loop
         if port is None or loop is None:
             return
+        spurious_count = 0
         while not self._stop_reader.is_set():
             try:
                 data = port.read(256)
-            except (serial.SerialException, OSError) as e:
+            except serial.SerialException as e:
+                msg = str(e)
+                if "readiness to read but returned no data" in msg:
+                    # Linux USB-serial kernel-level spurious readable flag.
+                    # The port is actually fine — just the poll() flag is
+                    # lying. Retry rather than tear down the connection.
+                    spurious_count += 1
+                    if spurious_count % 100 == 1:
+                        logger.debug(
+                            f"Suppressed spurious USB-serial poll glitch "
+                            f"(count={spurious_count})"
+                        )
+                    # Tiny sleep so we don't spin at 100% CPU if the glitch
+                    # is rapid-fire.
+                    time.sleep(0.005)
+                    continue
                 logger.error(f"Serial read failed: {e}")
-                # Signal the main loop to reconnect.
+                loop.call_soon_threadsafe(self._signal_disconnect)
+                return
+            except OSError as e:
+                logger.error(f"Serial read OS error: {e}")
                 loop.call_soon_threadsafe(self._signal_disconnect)
                 return
             if not data:
                 # Timeout with no data — not an error, just continue.
                 continue
+            spurious_count = 0  # Real data flushes the glitch state.
             loop.call_soon_threadsafe(self._ingest_chunk, bytes(data))
 
     def _signal_disconnect(self) -> None:
