@@ -30,8 +30,10 @@ logger = logging.getLogger(__name__)
 
 # How often to re-issue the RCU_OFF -> RCU_ON cycle while RCU is enabled.
 # Matches MacExpert's serial behaviour so the amp keeps emitting fresh frames.
-_RCU_TICK_INTERVAL = 0.4  # seconds
-_RCU_OFF_ON_GAP = 0.06    # seconds
+# Tightened from 400ms to 250ms to cut perceived UI latency over the
+# WebSocket hop (one extra round trip vs direct serial).
+_RCU_TICK_INTERVAL = 0.25  # seconds
+_RCU_OFF_ON_GAP = 0.06     # seconds
 
 # Flush an unterminated RCU frame if no new bytes arrive for this long. The
 # 1.5K-FA only emits a frame when the LCD changes, so we can't always rely on a
@@ -271,9 +273,14 @@ class SerialHandler:
             cmd = await self._command_queue.get()
             logger.debug(f"Writing command: {cmd.hex()}")
             await self._write(cmd)
-            # Follow up with status request
-            await asyncio.sleep(0.05)
-            await self._write(CMD_REQUEST)
+            # Force an immediate RCU refresh so the client sees the
+            # command's effect on the LCD without waiting for the next
+            # 250ms ticker cycle. CSV polling runs on its own loop so
+            # we no longer need the old follow-up CMD_REQUEST here.
+            await asyncio.sleep(0.04)
+            await self._write(CMD_RCU_OFF)
+            await asyncio.sleep(_RCU_OFF_ON_GAP)
+            await self._write(CMD_RCU_ON)
 
     async def _rcu_tick_loop(self) -> None:
         """Periodic RCU OFF -> ON cycle so the amp emits a fresh LCD frame
