@@ -29,10 +29,10 @@ from spe.protocol import (
 logger = logging.getLogger(__name__)
 
 # How often to re-issue the RCU_OFF -> RCU_ON cycle while RCU is enabled.
-# Matches MacExpert's serial behaviour so the amp keeps emitting fresh frames.
-# Tightened from 400ms to 250ms to cut perceived UI latency over the
-# WebSocket hop (one extra round trip vs direct serial).
-_RCU_TICK_INTERVAL = 0.25  # seconds
+# 600ms keeps the display fresh without flooding the FTDI USB-serial. The
+# Pi's pyserial wrapper gets spurious "readiness but no data" errors when
+# the bus is saturated; a calmer tick rate keeps the port stable.
+_RCU_TICK_INTERVAL = 0.6   # seconds
 _RCU_OFF_ON_GAP = 0.06     # seconds
 
 # Flush an unterminated RCU frame if no new bytes arrive for this long. The
@@ -108,12 +108,21 @@ class SerialHandler:
 
     async def _teardown_port(self) -> None:
         """Close writer, drop references, reset connection state. Safe to
-        call repeatedly — idempotent."""
+        call repeatedly — idempotent. Also drops any queued user commands
+        so stale key presses don't fire on a different screen after the
+        reconnect completes (otherwise the user's SET/arrow clicks that
+        accumulated during the outage would execute on whatever menu the
+        amp settles on, not the one they were aiming at)."""
         self._connected = False
         writer = self._writer
         self._reader = None
         self._writer = None
         self._write_lock = None
+        try:
+            while not self._command_queue.empty():
+                self._command_queue.get_nowait()
+        except Exception:
+            pass
         if writer is None:
             return
         try:
@@ -222,16 +231,17 @@ class SerialHandler:
                 # readiness to read but returned no data" transiently on
                 # USB-serial when the kernel's poll() flags the port
                 # readable but the actual read hits 0 bytes. Treat as a
-                # short glitch up to 3x before giving up; real disconnects
-                # produce repeated errors and escalate cleanly.
+                # short glitch up to 10x before giving up; real disconnects
+                # produce repeated errors and still escalate after the
+                # retries exhaust.
                 empty_reads += 1
-                if empty_reads >= 3:
+                if empty_reads >= 10:
                     raise
                 await asyncio.sleep(0.05)
                 continue
             if not chunk:
                 empty_reads += 1
-                if empty_reads >= 3:
+                if empty_reads >= 10:
                     raise serial.SerialException("Serial connection lost")
                 await asyncio.sleep(0.05)
                 continue
@@ -273,14 +283,9 @@ class SerialHandler:
             cmd = await self._command_queue.get()
             logger.debug(f"Writing command: {cmd.hex()}")
             await self._write(cmd)
-            # Force an immediate RCU refresh so the client sees the
-            # command's effect on the LCD without waiting for the next
-            # 250ms ticker cycle. CSV polling runs on its own loop so
-            # we no longer need the old follow-up CMD_REQUEST here.
-            await asyncio.sleep(0.04)
-            await self._write(CMD_RCU_OFF)
-            await asyncio.sleep(_RCU_OFF_ON_GAP)
-            await self._write(CMD_RCU_ON)
+            # CSV polling happens on its own loop and the RCU ticker will
+            # pick up the post-command frame within one tick; avoid extra
+            # writes here so the USB-serial stays calm.
 
     async def _rcu_tick_loop(self) -> None:
         """Periodic RCU OFF -> ON cycle so the amp emits a fresh LCD frame
