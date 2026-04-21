@@ -8,13 +8,16 @@ A modern Python 3 remote control server for **SPE Expert** HF amplifiers (1.3K-F
 ## Features
 
 - **Power On/Off** — remote power control via DTR line (on) and serial command 0x0A (off)
-- **Full SPE protocol** — all 20 commands from the official Application Programmer's Guide Rev 1.1
+- **Full SPE protocol** — all commands from the official Application Programmer's Guide Rev 1.1, plus undocumented RCU commands
+- **RCU (Remote Control Unit) mode** — live LCD display mirror streamed as binary frames; compatible with the MacExpert companion app
 - **Self-contained** — single process serves both WebSocket API and web UI (no Apache/Nginx needed)
 - **Multi-client** — multiple browsers/devices can monitor the amplifier simultaneously
+- **Mixed-client broadcast** — text JSON for browsers, binary frames for RCU-capable clients, same socket
 - **Real-time gauges** — SWR, drain current, PA temperature, voltage with canvas-based arc gauges
 - **Responsive** — works on desktop, tablet, and mobile
 - **Auto-reconnect** — WebSocket and serial both reconnect automatically on failure
-- **Async I/O** — non-blocking serial communication using `pyserial-asyncio`
+- **Threaded reader + async writer** — blocking reads survive USB-serial poll glitches that crash `serial_asyncio`
+- **Graceful shutdown** — SIGINT/SIGTERM handler cancels tasks and closes the port cleanly
 - **Configurable** — YAML config file for serial port, baud rate, polling intervals
 
 ## Web Interface
@@ -122,28 +125,45 @@ For single-byte commands: `CNT=0x01`, `CHK=DATA` (same byte).
 
 ### Command Set
 
+All commands below are sent to the amp via WebSocket text messages — clients just send the bare name (e.g. `oper`). The Python server wraps them in the SPE packet format and writes them to the serial port.
+
 | Hex  | Command        | WebSocket msg  | Description |
 |------|----------------|----------------|-------------|
 | 0x01 | INPUT          | `input`        | Toggle input port |
 | 0x02 | BAND −         | `band_dn`      | Band down |
 | 0x03 | BAND +         | `band_up`      | Band up |
 | 0x04 | ANTENNA        | `antenna`      | Cycle TX antenna |
-| 0x05 | L−             | —              | ATU L minus |
-| 0x06 | L+             | —              | ATU L plus |
-| 0x07 | C−             | —              | ATU C minus |
-| 0x08 | C+             | —              | ATU C plus |
+| 0x05 | L−             | `l_minus`      | ATU inductance minus |
+| 0x06 | L+             | `l_plus`       | ATU inductance plus |
+| 0x07 | C−             | `c_minus`      | ATU capacitance minus |
+| 0x08 | C+             | `c_plus`       | ATU capacitance plus |
 | 0x09 | TUNE           | `tune`         | Start ATU tuning |
 | 0x0A | SWITCH OFF     | `power_off`    | Power OFF amplifier |
 | 0x0B | POWER          | `power_level`  | Toggle power level (L/M/H) |
 | 0x0C | DISPLAY        | `display`      | Display toggle |
 | 0x0D | OPERATE        | `oper`         | Toggle Operate/Standby |
-| 0x0E | CAT            | —              | CAT mode |
-| 0x0F | LEFT ARROW     | —              | Menu navigation left |
-| 0x10 | RIGHT ARROW    | —              | Menu navigation right |
-| 0x11 | SET            | —              | Menu enter/set |
+| 0x0E | CAT            | `cat`          | CAT mode |
+| 0x0F | LEFT ARROW     | `left`         | Menu navigation left |
+| 0x10 | RIGHT ARROW    | `right`        | Menu navigation right |
+| 0x11 | SET            | `set`          | Menu enter/set |
+| 0x80 | RCU ON         | `rcu_on`       | Enable live LCD mirror stream (undocumented) |
+| 0x81 | RCU OFF        | `rcu_off`      | Disable live LCD mirror stream (undocumented) |
 | 0x82 | BACKLIGHT ON   | `backlight_on` | Turn backlight on |
 | 0x83 | BACKLIGHT OFF  | `backlight_off`| Turn backlight off |
 | 0x90 | STATUS         | (auto)         | Request status string |
+
+> **Note:** `rcu_on` / `rcu_off` are not in the official Programmer's Guide. They were reverse-engineered from the KTerm application traffic and are used internally by the server to drive the RCU LCD mirror — see the RCU section below.
+
+### Response Frames
+
+The amp multiplexes two response types on the same byte stream. Both are framed by three `0xAA` sync bytes, then a marker byte:
+
+| Marker | Type       | Length | Description |
+|--------|------------|--------|-------------|
+| 0x43   | CSV status | 67 bytes + checksum + CRLF | ASCII comma-separated status string (see below) |
+| 0x6A   | RCU frame  | Variable  | Proprietary binary LCD display payload; ends at next sync or quiet period |
+
+The serial handler parses both inline, dispatching CSV frames to `on_state_update` and RCU frames to `on_rcu_frame`.
 
 ### Power On/Off
 
@@ -183,6 +203,82 @@ The amplifier returns a 67-character ASCII comma-separated status string with 19
 **Warning codes:** `M`=Alarm, `A`=No antenna, `S`=SWR, `B`=No band, `P`=Power limit, `O`=Overheat, `Y`=ATU N/A, `W`=Tune no power, `K`=ATU bypass, `R`=Remote hold, `T`=Combiner heat, `C`=Combiner fault, `N`=None
 
 **Alarm codes:** `S`=SWR limit, `A`=Amp protection, `D`=Overdrive, `H`=Excess heat, `C`=Combiner fault, `N`=None
+
+## RCU (Remote Control Unit) Mode
+
+RCU is a streaming mode that mirrors the amplifier's front-panel LCD display over the serial link. When enabled, the amp emits binary frames (marker `0x6A`) every time the display changes, in addition to the regular CSV status polling.
+
+### How the Server Uses RCU
+
+1. On serial connect, the handler sends `CMD_REQUEST` (status) followed by `CMD_RCU_ON`.
+2. A background task cycles `RCU_OFF` → `RCU_ON` every 500 ms to keep the stream alive — the amp sometimes stops emitting after a long quiet period.
+3. A quiet-flush task force-terminates any half-received RCU frame after 300 ms of silence so static screens (no display changes) still emit their final frame.
+4. Incoming RCU frame payloads are passed to the registered `on_rcu_frame` callback, which broadcasts them as **binary** WebSocket messages.
+
+### Why Two Frame Types?
+
+- **CSV status** — the machine-readable data (power, SWR, temps, warnings). Parsed into JSON and sent as WebSocket text messages. This is what the bundled browser dashboard consumes.
+- **RCU frames** — the pixel-level view of the LCD. Lets a native client render an exact replica of the amplifier's front panel (including menu screens, settings, and power-on animations that aren't in the CSV).
+
+### Clients
+
+| Client       | Platform | Uses CSV | Uses RCU | Notes |
+|--------------|----------|----------|----------|-------|
+| Web dashboard | Browser | Yes      | No (drops binary) | Bundled in `web/` — opens at `http://<pi>:8888/` |
+| MacExpert     | macOS   | Yes      | Yes      | Native Swift app; shares the same WebSocket contract |
+
+The server broadcasts both frame types to all connected clients. Clients that don't know about RCU simply ignore binary messages.
+
+### Sharing the Command Contract with MacExpert
+
+The `COMMANDS` dict keys in `spe/protocol.py` are the canonical WebSocket command names. MacExpert's `SPEProtocol.swift` maintains a matching `wsCommandName` enum so both clients drive the amplifier identically. When adding a new command, update both sides.
+
+## Architecture
+
+### Threading Model (`serial_handler.py`)
+
+The serial handler uses a hybrid thread + asyncio model instead of `pyserial-asyncio`:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  Asyncio event loop (main thread)                          │
+│   ├─ _poll_loop     ← periodic status requests             │
+│   ├─ _command_loop  ← drains command queue, writes to port │
+│   ├─ _rcu_tick_loop ← keeps RCU stream alive               │
+│   ├─ _quiet_flush   ← flushes stalled RCU frames           │
+│   ├─ _connection_watchdog                                   │
+│   └─ Frame parser   ← drains receive buffer                │
+│                                                             │
+│      ▲                          │                           │
+│      │ call_soon_threadsafe     │ _safe_write (with lock)   │
+│      │                          ▼                           │
+│  ┌──────────────────────────────────────────┐              │
+│  │  Daemon thread: blocking serial.read()   │              │
+│  │  → pushes raw chunks into asyncio queue  │              │
+│  └──────────────────────────────────────────┘              │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Why not `serial_asyncio`?** Its internal `_read_ready` callback raises `SerialException("readiness to read but returned no data")` on Linux USB-serial adapters under moderate traffic. That bounces the port and breaks the RCU stream. The blocking `serial.Serial.read()` path used here never hits that bug, so the port stays up even under full RCU load.
+
+**Writes** go through `_safe_write()`, which is guarded by a `threading.Lock` so the async command loop never interleaves packets with the RCU ticker.
+
+### Key Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `_RCU_TICK_INTERVAL` | 0.5 s | RCU OFF → ON cycle cadence |
+| `_RCU_OFF_ON_GAP` | 0.05 s | Gap between RCU OFF and ON |
+| `_RCU_QUIET_FLUSH` | 0.3 s | Force-flush stuck RCU frames after this much silence |
+| `_READ_TIMEOUT` | 0.1 s | Blocking serial read timeout |
+| `_MAX_BUFFER` | 4096 bytes | Receive buffer cap before discarding stale bytes |
+
+### Lifecycle
+
+1. `server.py` creates `SerialHandler`, `PowerController`, and the Tornado app.
+2. Installs SIGINT/SIGTERM handlers that schedule `serial_handler.stop()` on the asyncio loop, then stop both Tornado and asyncio loops.
+3. `serial_handler.start()` loops: open port → spawn reader thread → run the five asyncio tasks via `asyncio.wait(FIRST_COMPLETED)` → tear down on any task exit → reconnect after 3 s.
+4. On `stop()`: sets `_stop_reader` event, sends `RCU_OFF` to the amp, closes the port, drops queued commands. The reader thread exits naturally once its port handle is closed.
 
 ## Running as a System Service
 
@@ -234,20 +330,20 @@ spe-remote/
 ├── requirements.txt         # Python dependencies
 ├── setup.sh                 # One-time setup script
 ├── run.sh                   # Start script
-├── server.py                # Main entry point
+├── server.py                # Main entry point (signal-safe shutdown)
 ├── power_spe_on.py          # Original OH2GEK power-on script (reference)
 ├── spe/
 │   ├── __init__.py
 │   ├── config.py            # YAML config loader
-│   ├── protocol.py          # SPE serial protocol (all 20 commands)
+│   ├── protocol.py          # SPE commands, response markers, state parser
 │   ├── power_control.py     # Power on (DTR) / off (0x0A) controller
-│   ├── serial_handler.py    # Async serial I/O with reconnect
-│   ├── websocket_handler.py # Multi-client WebSocket handler
+│   ├── serial_handler.py    # Thread reader + asyncio writer, CSV+RCU framing
+│   ├── websocket_handler.py # Multi-client text+binary broadcast
 │   └── app.py               # Tornado application setup
-├── web/
-│   ├── index.html           # Web client
-│   ├── style.css            # Dark theme styles
-│   └── app.js               # WebSocket client + gauge rendering
+├── web/                     # Bundled browser dashboard (text JSON only)
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
 └── docs/
     ├── SPE_Remote_Control_User_Guide.pdf
     └── generate_guide.py    # PDF generator script
@@ -257,7 +353,11 @@ spe-remote/
 
 Connect to `ws://<host>:8888/ws`
 
-**Received JSON (amplifier state):**
+The socket carries **three** kinds of server-to-client messages: JSON state updates (text), JSON power-action results (text), and raw RCU LCD frames (binary). Clients that don't care about RCU should ignore binary messages.
+
+### Server → Client
+
+**1. Amplifier state (text JSON, broadcast on change or heartbeat):**
 
 ```json
 {
@@ -278,7 +378,7 @@ Connect to `ws://<host>:8888/ws`
 }
 ```
 
-**Received JSON (power action result):**
+**2. Power action result (text JSON, sent after `power_on` / `power_off`):**
 
 ```json
 {
@@ -287,22 +387,70 @@ Connect to `ws://<host>:8888/ws`
 }
 ```
 
-**Send commands (text messages):**
+`status` is `"ok"` on success, `"error"` on failure (check server logs for details).
 
-| Command        | Action                        |
-|----------------|-------------------------------|
-| `power_on`     | Power ON via DTR toggle       |
-| `power_off`    | Power OFF via serial cmd 0x0A |
-| `oper`         | Toggle Operate/Standby        |
-| `antenna`      | Cycle TX antenna              |
-| `input`        | Toggle input port             |
-| `tune`         | Start ATU tuning              |
-| `power_level`  | Toggle power level (L/M/H)   |
-| `band_up`      | Band up                       |
-| `band_dn`      | Band down                     |
-| `display`      | Toggle display                |
-| `backlight_on` | Backlight on                  |
-| `backlight_off`| Backlight off                 |
+**3. RCU LCD frame (binary, broadcast whenever the amp display changes):**
+
+The payload is the raw bytes **after** the `AA AA AA 6A` sync+marker — i.e. the content portion of the RCU frame only. Decoding this into a pixel buffer is client-specific; see MacExpert's `RCUFrameDecoder.swift` for a reference implementation.
+
+### Client → Server
+
+Clients send bare command names as WebSocket text messages. The server dispatches:
+
+- `power_on` → `PowerController.power_on()` (DTR hardware toggle)
+- `power_off` → `PowerController.power_off()` (serial command `0x0A`)
+- Everything else → `SerialHandler.send_command()` → serial write
+
+**Full command list:**
+
+| Command        | Action                          |
+|----------------|---------------------------------|
+| `power_on`     | Power ON via DTR toggle         |
+| `power_off`    | Power OFF via serial cmd 0x0A   |
+| `oper`         | Toggle Operate/Standby          |
+| `antenna`      | Cycle TX antenna                |
+| `input`        | Toggle input port               |
+| `tune`         | Start ATU tuning                |
+| `power_level`  | Toggle power level (L/M/H)      |
+| `band_up`      | Band up                         |
+| `band_dn`      | Band down                       |
+| `l_plus`       | ATU inductance +                |
+| `l_minus`      | ATU inductance −                |
+| `c_plus`       | ATU capacitance +               |
+| `c_minus`      | ATU capacitance −               |
+| `display`      | Toggle display                  |
+| `cat`          | CAT mode                        |
+| `left`         | Menu navigation left            |
+| `right`        | Menu navigation right           |
+| `set`          | Menu enter/set                  |
+| `rcu_on`       | Enable RCU LCD mirror stream    |
+| `rcu_off`      | Disable RCU LCD mirror stream   |
+| `backlight_on` | Backlight on                    |
+| `backlight_off`| Backlight off                   |
+
+> **Alias:** `gain` is kept as an alias for `power_level` for backward compatibility with the original OH2GEK client.
+
+### Example: JavaScript Client
+
+```javascript
+const ws = new WebSocket("ws://<pi>:8888/ws");
+
+ws.onmessage = (evt) => {
+  if (typeof evt.data === "string") {
+    const msg = JSON.parse(evt.data);
+    if (msg.power_result) { /* handle power action result */ }
+    else                  { /* handle state update */ }
+  } else {
+    // Binary message = RCU LCD frame.
+    // evt.data is a Blob; convert to ArrayBuffer to decode.
+    evt.data.arrayBuffer().then(buf => renderRCU(new Uint8Array(buf)));
+  }
+};
+
+ws.send("oper");        // toggle Operate
+ws.send("band_up");     // band up
+ws.send("power_off");   // power OFF via 0x0A
+```
 
 ## Troubleshooting
 
@@ -315,12 +463,17 @@ Connect to `ws://<host>:8888/ws`
 | Multiple `/dev/ttyUSBx` devices | Use `/dev/serial/by-id/...` path instead |
 | Power ON not working | Check FTDI USB-serial adapter supports DTR — verify with `dmesg` |
 | "POWER SWITCH HELD BY REMOTE" | Normal when DTR is held high after power on |
+| Logs show "Suppressed spurious USB-serial poll glitch" | Harmless — the kernel lies about poll readiness on USB-serial; the reader thread handles it |
+| RCU frames never arrive | Check the companion client actually reads binary WebSocket messages; the browser dashboard doesn't |
+| Server doesn't exit on Ctrl+C | Should never happen with the new shutdown handler — if it does, check for a hung serial read and file an issue |
+| MacExpert can't send commands | Verify `wsCommandName` enum in Swift matches `COMMANDS` keys in `spe/protocol.py` |
 
 ## Credits
 
 - **Original script**: [OH2GEK](https://github.com/oh2gek/SPE-1.3-2K-FA-Remote-server) — Python 2 server with WebSocket interface for SPE amplifiers
-- **Modernized version**: VU2CPL — Python 3 port with async I/O, multi-client support, power on/off, full SPE protocol, built-in web client, and responsive UI
-- **Protocol reference**: SPE Application Programmer's Guide Rev 1.1 for Expert 1.3K-FA / 2K-FA
+- **Modernized version**: VU2CPL — Python 3 port with async I/O, multi-client support, power on/off, full SPE protocol, RCU LCD mirror, threaded serial reader, built-in web client, and responsive UI
+- **Native macOS companion app**: MacExpert — Swift client that decodes RCU binary frames to render a pixel-accurate LCD mirror, shares the WebSocket command contract with the bundled web client
+- **Protocol reference**: SPE Application Programmer's Guide Rev 1.1 for Expert 1.3K-FA / 2K-FA (RCU commands reverse-engineered from KTerm)
 
 ## License
 
