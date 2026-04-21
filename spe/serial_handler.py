@@ -73,6 +73,11 @@ class SerialHandler:
         # Timestamp of last incoming byte; used to force-flush a stalled RCU
         # frame when the amp goes quiet.
         self._last_byte_at: float = 0.0
+        # Serialises all writes to the serial transport. Without this, three
+        # concurrent coroutines (command loop, CSV polling, RCU ticker) can
+        # each call writer.write/drain and their frames interleave on the
+        # wire — the amp then sees mangled command packets and ignores them.
+        self._write_lock: asyncio.Lock | None = None
 
     @property
     def state(self) -> AmplifierState:
@@ -103,8 +108,7 @@ class SerialHandler:
             # down the port so a subsequent reconnect isn't chasing stale
             # frames.
             try:
-                self._writer.write(CMD_RCU_OFF)
-                await self._writer.drain()
+                await self._write(CMD_RCU_OFF)
             except Exception:
                 pass
             try:
@@ -144,6 +148,7 @@ class SerialHandler:
             baudrate=self.serial_config.baudrate,
         )
         self._connected = True
+        self._write_lock = asyncio.Lock()
         logger.info("Serial connected")
 
         # Reset framing buffer for the new connection.
@@ -152,9 +157,8 @@ class SerialHandler:
 
         # Initial status request + enable RCU so the amp starts pushing LCD
         # frames as soon as the display state changes.
-        self._writer.write(CMD_REQUEST)
-        self._writer.write(CMD_RCU_ON)
-        await self._writer.drain()
+        await self._write(CMD_REQUEST)
+        await self._write(CMD_RCU_ON)
 
     async def _run_loop(self) -> None:
         read_task = asyncio.create_task(self._read_serial())
@@ -195,6 +199,17 @@ class SerialHandler:
                 self._buffer.clear()
             self._drain_buffer()
 
+    async def _write(self, payload: bytes) -> None:
+        """Write to the serial transport under the write lock so no two
+        coroutines can interleave packets on the wire."""
+        writer = self._writer
+        lock = self._write_lock
+        if writer is None or lock is None:
+            return
+        async with lock:
+            writer.write(payload)
+            await writer.drain()
+
     async def _poll_loop(self) -> None:
         while self._running and self._writer:
             interval = (
@@ -205,19 +220,16 @@ class SerialHandler:
             await asyncio.sleep(interval)
 
             if self._command_queue.empty():
-                self._writer.write(CMD_REQUEST)
-                await self._writer.drain()
+                await self._write(CMD_REQUEST)
 
     async def _command_loop(self) -> None:
         while self._running and self._writer:
             cmd = await self._command_queue.get()
-            self._writer.write(cmd)
-            await self._writer.drain()
-
+            logger.debug(f"Writing command: {cmd.hex()}")
+            await self._write(cmd)
             # Follow up with status request
             await asyncio.sleep(0.05)
-            self._writer.write(CMD_REQUEST)
-            await self._writer.drain()
+            await self._write(CMD_REQUEST)
 
     async def _rcu_tick_loop(self) -> None:
         """Periodic RCU OFF -> ON cycle so the amp emits a fresh LCD frame
@@ -229,13 +241,11 @@ class SerialHandler:
             if not self._writer:
                 return
             try:
-                self._writer.write(CMD_RCU_OFF)
-                await self._writer.drain()
+                await self._write(CMD_RCU_OFF)
                 await asyncio.sleep(_RCU_OFF_ON_GAP)
                 if not self._writer:
                     return
-                self._writer.write(CMD_RCU_ON)
-                await self._writer.drain()
+                await self._write(CMD_RCU_ON)
             except Exception as e:
                 logger.warning(f"RCU tick failed: {e}")
                 return
