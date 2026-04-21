@@ -35,6 +35,7 @@ def main() -> None:
         serial_config=config.serial,
         polling_config=config.polling,
         on_state_update=AmplifierWebSocket.broadcast_state,
+        on_rcu_frame=AmplifierWebSocket.broadcast_rcu_frame,
     )
 
     power_controller = PowerController(serial_config=config.serial)

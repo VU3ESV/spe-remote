@@ -31,8 +31,16 @@ CMD_SET = b"\x55\x55\x55\x01\x11\x11"         # Set / menu enter
 CMD_BL_ON = b"\x55\x55\x55\x01\x82\x82"       # Backlight on
 CMD_BL_OFF = b"\x55\x55\x55\x01\x83\x83"      # Backlight off
 CMD_REQUEST = b"\x55\x55\x55\x01\x90\x90"     # Request status string
+CMD_RCU_ON = b"\x55\x55\x55\x01\x80\x80"      # RCU (live LCD mirror) on
+CMD_RCU_OFF = b"\x55\x55\x55\x01\x81\x81"     # RCU off
 
-# Commands accessible via WebSocket
+# Response packet type markers (byte immediately after AA AA AA sync)
+RESP_STATUS_CNT = 0x43     # CSV status frame (67 bytes of data)
+RESP_RCU_TYPE = 0x6A       # Proprietary LCD display frame in RCU mode
+
+# Commands accessible via WebSocket. Names here MUST match the
+# `wsCommandName` values in MacExpert's SPEProtocol.swift so both clients
+# can drive the amp identically.
 COMMANDS = {
     "input": CMD_INPUT,
     "band_dn": CMD_BAND_DN,
@@ -51,9 +59,11 @@ COMMANDS = {
     "left": CMD_LEFT,
     "right": CMD_RIGHT,
     "set": CMD_SET,
-    "gain": CMD_POWER,           # Alias kept for backward compatibility
+    "rcu_on": CMD_RCU_ON,
+    "rcu_off": CMD_RCU_OFF,
     "backlight_on": CMD_BL_ON,
     "backlight_off": CMD_BL_OFF,
+    "gain": CMD_POWER,           # Alias kept for backward compatibility
 }
 
 BAND_MAP = {

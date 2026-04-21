@@ -111,3 +111,20 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
                 dead_clients.add(client)
 
         cls.clients -= dead_clients
+
+    @classmethod
+    def broadcast_rcu_frame(cls, payload: bytes) -> None:
+        """Broadcast a raw RCU LCD display frame to all clients as a binary
+        WebSocket message. The payload is the bytes after the ``AA AA AA 6A``
+        sync+marker — i.e. what MacExpert's RCU frame parser expects. Clients
+        that don't decode RCU (e.g. the bundled web dashboard) silently drop
+        binary messages, so this is safe to broadcast to everyone."""
+        if not cls.clients:
+            return
+        dead_clients = set()
+        for client in cls.clients:
+            try:
+                client.write_message(payload, binary=True)
+            except tornado.websocket.WebSocketClosedError:
+                dead_clients.add(client)
+        cls.clients -= dead_clients
