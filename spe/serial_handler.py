@@ -42,9 +42,9 @@ logger = logging.getLogger(__name__)
 # RCU OFF->ON cycle cadence. Calmer values keep the USB-serial relaxed;
 # the amp only emits one frame per display change so over-ticking just
 # generates redundant traffic.
-_RCU_TICK_INTERVAL = 0.8  # seconds (was 0.5; user-command throughput
-                          # was suffering at higher rates because the
-                          # amp's serial input buffer is small)
+_RCU_TICK_INTERVAL = 1.5  # seconds — keeps the live cursor mirror
+                          # responsive without flooding the amp's small
+                          # serial input buffer.
 _RCU_OFF_ON_GAP = 0.05    # seconds
 
 # Force-flush an unterminated RCU frame if no new bytes arrive for this
@@ -217,16 +217,35 @@ class SerialHandler:
                 f"(payload={payload.hex()})"
             )
             return
+        # Back-pressure: if the OS-level write buffer is already piling
+        # up (FTDI hasn't drained yet), drop low-priority RCU heartbeat
+        # writes rather than queueing more. RCU_OFF/RCU_ON are 0x80/0x81
+        # — losing one tick is harmless; the next tick will produce a
+        # frame. Dropping a user command (any other code) would lose a
+        # button press, so we always commit those.
+        is_rcu_tick = payload in (CMD_RCU_OFF, CMD_RCU_ON, CMD_REQUEST)
+        try:
+            waiting = port.out_waiting
+        except Exception:
+            waiting = 0
+        if is_rcu_tick and waiting > 64:
+            logger.debug(
+                f"Backpressure: skipping {payload.hex()} "
+                f"(out_waiting={waiting})"
+            )
+            return
         with self._write_lock:
             try:
-                logger.info(f"Serial write: {payload.hex()}")
-                n = port.write(payload)
-                logger.debug(f"Serial wrote {n} bytes")
-                # Don't call port.flush(): on a wedged FTDI it can block
-                # for the full kernel write timeout (1+ second), freezing
-                # the whole asyncio loop and stalling all other commands.
-                # The OS will drain the kernel buffer in the background;
-                # if there's a real problem we'll see the warning above.
+                logger.debug(f"Serial write: {payload.hex()}")
+                port.write(payload)
+                # flush() forces the kernel write buffer to drain. Without
+                # it, FTDI writes accumulate in the kernel queue and the
+                # driver eventually wedges (writes silently succeed at OS
+                # level but never reach the device). With the heartbeat
+                # throttled to 1.5 s and back-pressure above, flush()
+                # completes in microseconds; only a hardware-stuck device
+                # would block here, in which case we want the exception.
+                port.flush()
             except (serial.SerialException, OSError) as e:
                 logger.warning(f"Serial write failed: {e}")
 
