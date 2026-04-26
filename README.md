@@ -169,12 +169,10 @@ The serial handler parses both inline, dispatching CSV frames to `on_state_updat
 
 | Action     | Method | Notes |
 |------------|--------|-------|
-| **Power ON** | DTR/RTS line pulse | No serial command exists; uses an FTDI line sequence: `DTR=1` → 100 ms settle → `DTR=0 + RTS=1` → 1 s pulse → `DTR=1 + RTS=0` |
+| **Power ON** | DTR hardware line toggle | No serial command exists; uses DTR/RTS sequence via USB-serial adapter |
 | **Power OFF** | Serial command `0x0A` | SWITCH OFF — equivalent to pressing the front-panel OFF button |
 
 > **Note:** When DTR is held high, it takes power mastering control — the amplifier shows "POWER SWITCH HELD BY REMOTE" warning and the front-panel power switch is overridden. Startup takes 3–4.5 seconds.
-
-The power-on path is **port-tolerant**: it tries the configured `serial.port` first, then any `/dev/serial/by-id/usb-FTDI_*`, then any `/dev/ttyUSB*`. So a swapped FTDI cable (which changes the `by-id` symlink) still powers the amp without a config edit.
 
 ### Status String
 
