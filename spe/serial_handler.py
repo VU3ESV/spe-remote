@@ -210,11 +210,21 @@ class SerialHandler:
     def _safe_write(self, payload: bytes) -> None:
         port = self._port
         if port is None or not port.is_open:
+            logger.warning(
+                f"Serial write skipped: port {'None' if port is None else 'closed'} "
+                f"(payload={payload.hex()})"
+            )
             return
         with self._write_lock:
             try:
-                port.write(payload)
-                port.flush()
+                logger.info(f"Serial write: {payload.hex()}")
+                n = port.write(payload)
+                logger.debug(f"Serial wrote {n} bytes")
+                # Don't call port.flush(): on a wedged FTDI it can block
+                # for the full kernel write timeout (1+ second), freezing
+                # the whole asyncio loop and stalling all other commands.
+                # The OS will drain the kernel buffer in the background;
+                # if there's a real problem we'll see the warning above.
             except (serial.SerialException, OSError) as e:
                 logger.warning(f"Serial write failed: {e}")
 
