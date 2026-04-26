@@ -120,7 +120,12 @@ class AmplifierState:
 
     @property
     def is_active(self) -> bool:
-        return self.tx_status == "TX" or self.op_status == "Oper"
+        # Only the actual TX state should accelerate polling. Treating
+        # OPER (idle but armed) as "active" pushes the poll rate to
+        # 5 Hz, which combined with the RCU heartbeat saturates the
+        # amp's serial input buffer and causes user commands (OPER,
+        # STBY, etc.) to be silently dropped.
+        return self.tx_status == "TX"
 
 
 def parse_status(line: str) -> AmplifierState | None:

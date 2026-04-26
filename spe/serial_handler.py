@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 # RCU OFF->ON cycle cadence. Calmer values keep the USB-serial relaxed;
 # the amp only emits one frame per display change so over-ticking just
 # generates redundant traffic.
-_RCU_TICK_INTERVAL = 0.5  # seconds
+_RCU_TICK_INTERVAL = 0.8  # seconds (was 0.5; user-command throughput
+                          # was suffering at higher rates because the
+                          # amp's serial input buffer is small)
 _RCU_OFF_ON_GAP = 0.05    # seconds
 
 # Force-flush an unterminated RCU frame if no new bytes arrive for this
