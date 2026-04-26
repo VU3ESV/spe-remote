@@ -38,7 +38,10 @@ def main() -> None:
         on_rcu_frame=AmplifierWebSocket.broadcast_rcu_frame,
     )
 
-    power_controller = PowerController(serial_config=config.serial)
+    power_controller = PowerController(
+        serial_config=config.serial,
+        serial_handler=serial_handler,
+    )
 
     AmplifierWebSocket.configure(
         serial_handler=serial_handler,
