@@ -20,6 +20,48 @@ A modern Python 3 remote control server for **SPE Expert** HF amplifiers (1.3K-F
 - **Graceful shutdown** — SIGINT/SIGTERM handler cancels tasks and closes the port cleanly
 - **Configurable** — YAML config file for serial port, baud rate, polling intervals
 
+## How It Works — One Server, Many Clients
+
+The Python server is the **only** process that opens `/dev/ttyUSB0`. Every UI on every device connects to it over a single WebSocket on port 8888 — so the bundled browser dashboard, Node-RED running locally on the Pi, and MacExpert running on your laptop can all monitor and control the amp **simultaneously** with no serial-port contention.
+
+```
+                        SPE Amplifier
+                              │
+                          USB / RS-232
+                              │
+                              ▼
+                     ┌──────────────────┐
+                     │  /dev/ttyUSB0    │   ← only one process ever opens this
+                     └────────┬─────────┘
+                              │
+                              ▼
+                ┌─────────────────────────────┐
+                │   spe-remote Python server  │
+                │   on Raspberry Pi  :8888    │
+                │   (systemd: spe-remote)     │
+                └──────┬────────┬──────┬──────┘
+                       │        │      │
+            ws://pi:8888/ws (text JSON state + commands)
+                       │        │      │
+        ┌──────────────┘        │      └──────────────┐
+        ▼                       ▼                     ▼
+┌────────────────┐    ┌───────────────────┐    ┌────────────────┐
+│ Web dashboard  │    │ Node-RED on Pi    │    │ MacExpert      │
+│ http://pi:8888 │    │ ws://localhost... │    │ on your Mac    │
+│ (any browser)  │    │ flow + automation │    │ (LCD mirror)   │
+└────────────────┘    └───────────────────┘    └────────────────┘
+```
+
+**Why this matters:**
+- Old way (Node-RED holding the serial port directly) — only one app at a time could talk to the amp.
+- New way — every client sees the same live state, and any one of them can send commands.
+- All commands go through the same parser/queue inside the server, so they can't collide on the wire.
+
+**Drop-in flows for each client:**
+- Browser: served from the Pi at `http://<pi>:8888/` — no install.
+- Node-RED: import `docs/nodered-spe-ws-flow.json` (see [Node-RED Integration](#node-red-integration)).
+- MacExpert: native macOS app — uses the same WebSocket, plus the binary RCU LCD mirror.
+
 ## Web Interface
 
 The web client displays:
@@ -97,19 +139,44 @@ dmesg | grep ttyUSB
 
 Using `/dev/serial/by-id/...` paths is recommended — they persist across reboots unlike `/dev/ttyUSB0`.
 
-### 5. Start the Server in Interactive Mode
+### 5. Install as a System Service (recommended)
+
+```bash
+sudo ./install-service.sh
+```
+
+That's it. The installer auto-detects your user and the install path, adds you to the `dialout` group if needed, and registers `spe-remote` with systemd so it starts on boot and restarts on failure.
+
+Useful commands afterwards:
+
+```bash
+sudo systemctl status spe-remote      # is it running?
+sudo systemctl restart spe-remote     # apply config.yaml changes
+sudo journalctl -u spe-remote -f      # tail logs live
+sudo ./uninstall-service.sh           # remove the service later
+```
+
+#### 5.1. Or run in foreground (for testing)
+
+If you'd rather see logs in your terminal:
 
 ```bash
 ./run.sh
 ```
-#### 5.1. Start the Server in a Detached Mode , logs will append in the nohup.out file.
+
+Or detached, logs to `nohup.out`:
+
 ```bash
 nohup ./run.sh &
 ```
 
+> **Heads up:** only run *one* instance at a time. If the systemd service is already running, stop it first (`sudo systemctl stop spe-remote`) before launching `./run.sh`, otherwise both will fight for the serial port.
+
 ### 6. Open the Web Interface
 
 Navigate to `http://<your-pi-ip>:8888/` in any browser.
+
+This is the bundled dashboard. To also drive the amp from Node-RED on the same Pi or from MacExpert on your Mac, see the [How It Works](#how-it-works--one-server-many-clients) diagram above and the [Node-RED Integration](#node-red-integration) section.
 
 ## SPE Serial Protocol
 
@@ -280,35 +347,23 @@ The serial handler uses a hybrid thread + asyncio model instead of `pyserial-asy
 3. `serial_handler.start()` loops: open port → spawn reader thread → run the five asyncio tasks via `asyncio.wait(FIRST_COMPLETED)` → tear down on any task exit → reconnect after 3 s.
 4. On `stop()`: sets `_stop_reader` event, sends `RCU_OFF` to the amp, closes the port, drops queued commands. The reader thread exits naturally once its port handle is closed.
 
-## Running as a System Service
+## Service Internals
 
-A one-shot installer is included. After `./setup.sh` has created the venv, run:
+The Quick Start covers the basic install (`sudo ./install-service.sh`). This section is for what's inside the unit if you want to tweak it.
 
-```bash
-sudo ./install-service.sh
-```
+The unit is rendered from `systemd/spe-remote.service.template` and dropped at `/etc/systemd/system/spe-remote.service`. Highlights:
 
-The script:
-- Detects the right user (your `$SUDO_USER`) and working directory automatically — no template editing needed.
-- Adds the user to the `dialout` group if missing (so the service can open the serial port).
-- Renders the systemd unit from `systemd/spe-remote.service.template`.
-- Reloads systemd, enables `spe-remote` on boot, and starts it.
+| Setting | Why |
+|---|---|
+| `Type=simple` | The Python server doesn't fork; it stays in the foreground. |
+| `KillSignal=SIGTERM` + `TimeoutStopSec=10` | Lets the server's shutdown handler run — closes WebSocket clients with a proper close frame, stops keepalive, releases the serial port. Forced kill only after 10 s. |
+| `Restart=always` / `RestartSec=5` | Auto-recovers from crashes or transient serial errors. |
+| `After=network-online.target` | Starts after the Pi has its IP, so `host: 0.0.0.0` actually has interfaces to bind. |
+| `User=<you>` / `Group=<you>` | Drops privileges. Must be in the `dialout` group for serial access — installer handles this. |
+| `NoNewPrivileges=true`, `ProtectSystem=full`, `ProtectHome=read-only` | Modest hardening; none of these block serial or WebSocket I/O. |
+| `StandardOutput/Error=journal` | Logs go to journald. View with `journalctl -u spe-remote -f`. |
 
-Check / control the service:
-
-```bash
-sudo systemctl status spe-remote
-sudo systemctl restart spe-remote
-sudo journalctl -u spe-remote -f         # live logs
-```
-
-Remove the service later:
-
-```bash
-sudo ./uninstall-service.sh
-```
-
-The unit sends `SIGTERM` on stop so the server's shutdown handler runs (closes WebSocket clients, releases the serial port cleanly). It also runs with `NoNewPrivileges`, `ProtectSystem=full`, and `ProtectHome=read-only` for modest hardening — none of which affects serial access.
+After editing the template, re-run `sudo ./install-service.sh` to re-render and reload.
 
 ## Project Structure
 
