@@ -102,6 +102,7 @@ ERROR_MAP = {
 
 @dataclass
 class AmplifierState:
+    model: str = ""              # Amp ID code: "13K", "15K", "20K", or ""
     op_status: str = "Stby"
     tx_status: str = "RX"
     input: str = "0"
@@ -113,7 +114,9 @@ class AmplifierState:
     aswr: str = "0"
     voltage: str = "0"
     drain: str = "0"
-    pa_temp: str = "0"
+    pa_temp: str = "0"           # Heatsink (upper on 2K-FA)
+    pa_temp_lower: str = "0"     # Lower heatsink (2K-FA only; "000" on 1.3K-FA)
+    pa_temp_combiner: str = "0"  # Combiner (2K-FA only)
     warnings: str = ""
     error: str = ""
 
@@ -145,7 +148,13 @@ def parse_status(line: str) -> AmplifierState | None:
         op_status = "Oper" if data[2] == "O" else "Stby"
         tx_status = "TX" if data[3] == "T" else "RX"
 
+        # Extra temps only meaningful on 2K-FA (1.3K-FA reports "000").
+        # Indexed defensively in case a short / oddly-padded line slips through.
+        pa_temp_lower = data[16].strip() if len(data) > 16 else "0"
+        pa_temp_combiner = data[17].strip() if len(data) > 17 else "0"
+
         return AmplifierState(
+            model=data[1].strip(),
             op_status=op_status,
             tx_status=tx_status,
             input=data[5],
@@ -158,6 +167,8 @@ def parse_status(line: str) -> AmplifierState | None:
             voltage=data[13],
             drain=data[14],
             pa_temp=data[15],
+            pa_temp_lower=pa_temp_lower,
+            pa_temp_combiner=pa_temp_combiner,
             warnings=WARNING_MAP.get(data[18], ""),
             error=ERROR_MAP.get(data[19], ""),
         )

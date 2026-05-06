@@ -361,6 +361,7 @@ The socket carries **three** kinds of server-to-client messages: JSON state upda
 
 ```json
 {
+  "model": "20K",
   "op_status": "Oper",
   "tx_status": "TX",
   "input": "1",
@@ -373,10 +374,14 @@ The socket carries **three** kinds of server-to-client messages: JSON state upda
   "voltage": "54.6",
   "drain": "27.3",
   "pa_temp": "26",
+  "pa_temp_lower": "24",
+  "pa_temp_combiner": "23",
   "warnings": "",
   "error": ""
 }
 ```
+
+`model` is the amp's own ID code: `"13K"` (Expert 1.3K-FA), `"15K"` (1.5K-FA), or `"20K"` (2K-FA). The web client uses it to set the page header, scale the power bar (1500 W vs 2000 W), and show the lower-heatsink + combiner temps that only the 2K-FA reports. Empty string = unknown/not yet received.
 
 **2. Power action result (text JSON, sent after `power_on` / `power_off`):**
 

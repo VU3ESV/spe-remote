@@ -88,12 +88,49 @@
     }, 4000);
   }
 
+  // --- Model auto-detection ---
+  // Maps the SPE ID code (data[1] in the status string) to display name,
+  // power-bar full-scale wattage, tick labels, and whether to show the
+  // 2K-FA-only extra temp readings (lower heatsink + combiner).
+  const MODELS = {
+    "13K": { name: "SPE 1.3K-FA", maxW: 1500, ticks: ["0","250","500","750","1.0k","1.3k","1.5k"], extraTemps: false },
+    "15K": { name: "SPE 1.5K-FA", maxW: 1500, ticks: ["0","250","500","750","1.0k","1.3k","1.5k"], extraTemps: false },
+    "20K": { name: "SPE 2K-FA",   maxW: 2000, ticks: ["0","250","500","1.0k","1.3k","1.5k","2.0k"], extraTemps: true },
+  };
+  const MODEL_DEFAULT = { name: "SPE Expert", maxW: 1500,
+    ticks: ["0","250","500","750","1.0k","1.3k","1.5k"], extraTemps: false };
+
+  let currentModelKey = "";
+  let currentModel = MODEL_DEFAULT;
+
+  function applyModel(modelCode) {
+    if (modelCode === currentModelKey) return;  // No-op if unchanged
+    currentModelKey = modelCode;
+    currentModel = MODELS[modelCode] || MODEL_DEFAULT;
+
+    // Header label
+    document.getElementById("modelLabel").textContent = currentModel.name;
+
+    // Power-bar tick labels
+    const ticksEl = document.getElementById("powerTicks");
+    if (ticksEl) {
+      ticksEl.innerHTML = currentModel.ticks.map(t => `<span>${t}</span>`).join("");
+    }
+
+    // 2K-FA extra temps (lower heatsink + combiner)
+    const extraEl = document.getElementById("extraTemps");
+    if (extraEl) extraEl.style.display = currentModel.extraTemps ? "" : "none";
+  }
+
   // --- UI Update ---
   function updateUI(d) {
+    // Model auto-detection (header, power scale, extra temps)
+    if (d.model !== undefined) applyModel(d.model || "");
+
     // Power
     const pOut = parseInt(d.p_out, 10) || 0;
     document.getElementById("powerValue").textContent = pOut;
-    const pct = Math.min((pOut / 1500) * 100, 100);
+    const pct = Math.min((pOut / currentModel.maxW) * 100, 100);
     document.getElementById("powerBar").style.width = pct + "%";
 
     // SWR
@@ -106,6 +143,14 @@
     document.getElementById("valDrain").textContent = d.drain;
     document.getElementById("valTemp").innerHTML = `${d.pa_temp}&deg;C`;
     document.getElementById("valVolt").textContent = d.voltage;
+
+    // 2K-FA extra temps (only rendered if applyModel revealed the row)
+    if (currentModel.extraTemps) {
+      const lwr = document.getElementById("valTempLower");
+      const cmb = document.getElementById("valTempCombiner");
+      if (lwr && d.pa_temp_lower !== undefined) lwr.textContent = d.pa_temp_lower;
+      if (cmb && d.pa_temp_combiner !== undefined) cmb.textContent = d.pa_temp_combiner;
+    }
 
     // Info chips
     const txEl = document.getElementById("txStatus");
