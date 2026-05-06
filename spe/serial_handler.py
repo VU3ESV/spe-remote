@@ -21,6 +21,8 @@ Parses two response types on the same byte stream:
 CSV frames feed ``on_state_update``; RCU frames feed ``on_rcu_frame``.
 """
 
+from __future__ import annotations  # Allow PEP 604 unions (X | None) on Python 3.9
+
 import asyncio
 import logging
 import threading

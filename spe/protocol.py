@@ -1,5 +1,7 @@
 """SPE Expert amplifier serial protocol parser and command builder."""
 
+from __future__ import annotations  # Allow PEP 604 unions (X | None) on Python 3.9
+
 import json
 import logging
 from dataclasses import dataclass, asdict
