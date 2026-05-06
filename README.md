@@ -282,72 +282,71 @@ The serial handler uses a hybrid thread + asyncio model instead of `pyserial-asy
 
 ## Running as a System Service
 
-To start the server automatically on boot:
+A one-shot installer is included. After `./setup.sh` has created the venv, run:
 
 ```bash
-sudo nano /etc/systemd/system/spe-remote.service
+sudo ./install-service.sh
 ```
 
-Paste:
+The script:
+- Detects the right user (your `$SUDO_USER`) and working directory automatically — no template editing needed.
+- Adds the user to the `dialout` group if missing (so the service can open the serial port).
+- Renders the systemd unit from `systemd/spe-remote.service.template`.
+- Reloads systemd, enables `spe-remote` on boot, and starts it.
 
-```ini
-[Unit]
-Description=SPE Amplifier Remote Control
-After=network.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/spe-remote
-ExecStart=/home/pi/spe-remote/venv/bin/python server.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable spe-remote
-sudo systemctl start spe-remote
-```
-
-Check status:
+Check / control the service:
 
 ```bash
 sudo systemctl status spe-remote
-journalctl -u spe-remote -f
+sudo systemctl restart spe-remote
+sudo journalctl -u spe-remote -f         # live logs
 ```
+
+Remove the service later:
+
+```bash
+sudo ./uninstall-service.sh
+```
+
+The unit sends `SIGTERM` on stop so the server's shutdown handler runs (closes WebSocket clients, releases the serial port cleanly). It also runs with `NoNewPrivileges`, `ProtectSystem=full`, and `ProtectHome=read-only` for modest hardening — none of which affects serial access.
 
 ## Project Structure
 
 ```
 spe-remote/
-├── config.yaml              # Configuration file
-├── requirements.txt         # Python dependencies
-├── setup.sh                 # One-time setup script
-├── run.sh                   # Start script
-├── server.py                # Main entry point (signal-safe shutdown)
-├── power_spe_on.py          # Original OH2GEK power-on script (reference)
+├── config.yaml                    # Configuration file
+├── requirements.txt               # Python dependencies
+├── setup.sh                       # One-time setup (creates venv, installs deps)
+├── run.sh                         # Foreground start
+├── install-service.sh             # systemd installer (auto-detects user/path)
+├── uninstall-service.sh           # systemd uninstaller
+├── server.py                      # Main entry point (signal-safe shutdown)
+├── power_spe_on.py                # Original OH2GEK power-on script (reference)
 ├── spe/
 │   ├── __init__.py
-│   ├── config.py            # YAML config loader
-│   ├── protocol.py          # SPE commands, response markers, state parser
-│   ├── power_control.py     # Power on (DTR) / off (0x0A) controller
-│   ├── serial_handler.py    # Thread reader + asyncio writer, CSV+RCU framing
-│   ├── websocket_handler.py # Multi-client text+binary broadcast
-│   └── app.py               # Tornado application setup
-├── web/                     # Bundled browser dashboard (text JSON only)
+│   ├── config.py                  # YAML config loader
+│   ├── protocol.py                # SPE commands, response markers, state parser
+│   ├── power_control.py           # Power on (DTR) / off (0x0A) controller
+│   ├── serial_handler.py          # Thread reader + asyncio writer, CSV+RCU framing
+│   ├── websocket_handler.py       # Multi-client text+binary broadcast + keepalive
+│   └── app.py                     # Tornado app + no-cache static handler
+├── web/                           # Bundled browser dashboard (text JSON only)
 │   ├── index.html
 │   ├── style.css
 │   └── app.js
+├── systemd/
+│   └── spe-remote.service.template
 └── docs/
     ├── SPE_Remote_Control_User_Guide.pdf
-    └── generate_guide.py    # PDF generator script
+    ├── generate_guide.py          # PDF generator script
+    └── nodered-spe-ws-flow.json   # Sample Node-RED flow (WebSocket-based)
 ```
+
+## Node-RED Integration
+
+A ready-to-import Node-RED flow lives in `docs/nodered-spe-ws-flow.json`. It connects to this server's WebSocket on `ws://localhost:8888/ws` (so Node-RED, the browser dashboard, and MacExpert can all run at the same time without serial-port contention).
+
+To import: Node-RED ☰ menu → Import → paste the file contents → Import. The flow adds a new dashboard group called "Amplifier (WS)" with the same buttons and gauges as the bundled web client.
 
 ## WebSocket API
 
