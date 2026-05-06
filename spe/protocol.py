@@ -4,6 +4,7 @@ from __future__ import annotations  # Allow PEP 604 unions (X | None) on Python 
 
 import json
 import logging
+import re
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,15 @@ ERROR_MAP = {
     "N": "",
 }
 
+# Amp ID code pattern: 2 digits + K (e.g. 13K, 15K, 20K). The byte offsets
+# in the CSV status frame have been observed to shift by ±1 between firmware
+# revisions / framing variants, so we scan the first few fields rather than
+# trusting a fixed index.
+_MODEL_RE = re.compile(r"^\d{2}K$")
+# Whether we've logged a sample of the parsed CSV fields yet. Helps debug
+# field-offset drift on new firmwares without spamming the log.
+_logged_first_parse = False
+
 
 @dataclass
 class AmplifierState:
@@ -153,8 +163,29 @@ def parse_status(line: str) -> AmplifierState | None:
         pa_temp_lower = data[16].strip() if len(data) > 16 else "0"
         pa_temp_combiner = data[17].strip() if len(data) > 17 else "0"
 
+        # Scan the first few fields for an amp ID code (e.g. 13K / 15K / 20K).
+        # Different firmware revisions place the ID at slightly different
+        # offsets — this avoids hardcoding a single index that breaks on yours.
+        model = ""
+        for i in range(min(3, len(data))):
+            cand = data[i].strip()
+            if _MODEL_RE.match(cand):
+                model = cand
+                break
+
+        # Log the parsed field layout exactly once so we can diagnose any
+        # offset issue on a new firmware without enabling DEBUG logging.
+        global _logged_first_parse
+        if not _logged_first_parse:
+            _logged_first_parse = True
+            preview = [f"[{i}]={data[i]!r}" for i in range(min(8, len(data)))]
+            logger.info(
+                f"First CSV parse: model={model!r}, "
+                f"len={len(data)}, fields: {' '.join(preview)}"
+            )
+
         return AmplifierState(
-            model=data[1].strip(),
+            model=model,
             op_status=op_status,
             tx_status=tx_status,
             input=data[5],
