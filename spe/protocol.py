@@ -112,7 +112,12 @@ _logged_first_parse = False
 
 @dataclass
 class AmplifierState:
-    model: str = ""              # Amp ID code: "13K", "15K", "20K", or ""
+    # MacExpert decodes this as JSON key "model_id" — keep the Python
+    # field name aligned so dataclass-asdict serialisation matches the
+    # client's CodingKey. (The legacy MacExpert v2.0.x release looks
+    # for "model_id"; using just "model" here would silently leave the
+    # client unable to detect the amp model and fall back to .unknown.)
+    model_id: str = ""           # Amp ID code: "13K", "15K", "20K", or ""
     op_status: str = "Stby"
     tx_status: str = "RX"
     input: str = "0"
@@ -166,11 +171,11 @@ def parse_status(line: str) -> AmplifierState | None:
         # Scan the first few fields for an amp ID code (e.g. 13K / 15K / 20K).
         # Different firmware revisions place the ID at slightly different
         # offsets — this avoids hardcoding a single index that breaks on yours.
-        model = ""
+        model_id = ""
         for i in range(min(3, len(data))):
             cand = data[i].strip()
             if _MODEL_RE.match(cand):
-                model = cand
+                model_id = cand
                 break
 
         # Log the parsed field layout exactly once so we can diagnose any
@@ -180,12 +185,12 @@ def parse_status(line: str) -> AmplifierState | None:
             _logged_first_parse = True
             preview = [f"[{i}]={data[i]!r}" for i in range(min(8, len(data)))]
             logger.info(
-                f"First CSV parse: model={model!r}, "
+                f"First CSV parse: model_id={model_id!r}, "
                 f"len={len(data)}, fields: {' '.join(preview)}"
             )
 
         return AmplifierState(
-            model=model,
+            model_id=model_id,
             op_status=op_status,
             tx_status=tx_status,
             input=data[5],
