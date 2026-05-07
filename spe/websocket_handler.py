@@ -58,6 +58,15 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
             tornado.ioloop.IOLoop.current().spawn_callback(
                 self._handle_power, message
             )
+        elif message.startswith("set_temp_unit:") and self._serial_handler:
+            # Live temperature-unit toggle. Example payloads: "set_temp_unit:F"
+            # or "set_temp_unit:C". Updates in-memory unit on the handler
+            # (so it stamps every subsequent state) and persists to
+            # config.yaml so the choice survives restarts.
+            from spe.config import persist_temperature_unit
+            requested = message.split(":", 1)[1].strip()
+            applied = self._serial_handler.set_temperature_unit(requested)
+            persist_temperature_unit(applied)
         elif self._serial_handler:
             self._serial_handler.send_command(message)
 

@@ -152,6 +152,25 @@ class SerialHandler:
         else:
             logger.warning(f"Unknown command: {command}")
 
+    def set_temperature_unit(self, unit: str) -> str:
+        """Update the unit stamped onto subsequent state broadcasts.
+
+        Also patches the cached _state and re-fires the on_state_update
+        callback, so connected clients flip immediately without having
+        to wait for the next CSV poll. Returns the normalised unit ('C'
+        or 'F') that was actually set.
+        """
+        unit = "F" if str(unit).upper().startswith("F") else "C"
+        if unit != self.temperature_unit:
+            self.temperature_unit = unit
+            self._state.temperature_unit = unit
+            try:
+                self.on_state_update(self._state)
+            except Exception as e:
+                logger.warning(f"State callback during unit change failed: {e}")
+            logger.info(f"Temperature unit changed to {unit}")
+        return unit
+
     # ------------------------------------------------------------------
     # Port open / close
     # ------------------------------------------------------------------

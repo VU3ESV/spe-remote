@@ -142,6 +142,22 @@ h1 span { color: var(--accent); font-weight: 600; }
   letter-spacing: 0.05em;
 }
 
+.unit-toggle {
+  display: inline-block;
+  margin-left: 0.3rem;
+  padding: 0 0.3rem;
+  font-size: 0.6rem;
+  color: var(--accent);
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  text-transform: none;
+  letter-spacing: 0;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.unit-toggle:hover { border-color: var(--accent); background: rgba(0, 188, 212, 0.12); }
+
 .gauge-reading {
   font-size: 1.3rem;
   font-weight: 600;

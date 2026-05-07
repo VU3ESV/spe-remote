@@ -1,3 +1,4 @@
+import re
 import yaml
 import logging
 from dataclasses import dataclass, field
@@ -45,6 +46,44 @@ class AppConfig:
     polling: PollingConfig = field(default_factory=PollingConfig)
     amp: AmpConfig = field(default_factory=AmpConfig)
     log_level: str = "INFO"
+
+
+def persist_temperature_unit(unit: str, path: str = "config.yaml") -> bool:
+    """Rewrite ``amp.temperature_unit`` in ``config.yaml`` in place.
+
+    Uses a line-based regex substitution so comments and unrelated keys
+    survive untouched (PyYAML's dump would drop all of those). If the
+    ``amp:`` section doesn't exist yet, append a minimal one. Returns
+    True on success.
+    """
+    unit = "F" if str(unit).upper().startswith("F") else "C"
+    p = Path(path)
+    if not p.exists():
+        logger.warning(f"Cannot persist unit: {path} does not exist")
+        return False
+
+    text = p.read_text()
+    pattern = re.compile(
+        r"^(\s*temperature_unit\s*:\s*)([A-Za-z]+)(\s*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    if pattern.search(text):
+        new_text = pattern.sub(lambda m: f"{m.group(1)}{unit}{m.group(3)}", text)
+    else:
+        # Section not present — append it. Preserves the rest of the file.
+        suffix = "\n\namp:\n  temperature_unit: " + unit + "\n"
+        new_text = text.rstrip() + suffix
+
+    if new_text == text:
+        return True  # Already at the requested value.
+
+    try:
+        p.write_text(new_text)
+        logger.info(f"Persisted temperature_unit={unit} to {path}")
+        return True
+    except OSError as e:
+        logger.warning(f"Failed to persist temperature_unit: {e}")
+        return False
 
 
 def load_config(path: str = "config.yaml") -> AppConfig:

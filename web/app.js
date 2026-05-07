@@ -70,6 +70,20 @@
     document.getElementById("btnPowerOff").classList.remove("busy");
   }
 
+  // Live °C/°F toggle. Sends a "set_temp_unit:F" or "set_temp_unit:C"
+  // text command; the server flips the in-memory unit, persists it back
+  // to config.yaml, and rebroadcasts state to all clients.
+  document.addEventListener("DOMContentLoaded", () => {
+    const toggle = document.getElementById("unitToggle");
+    if (!toggle) return;
+    toggle.addEventListener("click", () => {
+      const next = toggle.dataset.next || "F";
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(`set_temp_unit:${next}`);
+      }
+    });
+  });
+
   function handlePowerResult(d) {
     clearPowerBusy();
     const alertBar = document.getElementById("alertBar");
@@ -141,11 +155,22 @@
 
     // Drain, temp, voltage. The server stamps temperature_unit ("C"/"F")
     // onto every state — the amp itself doesn't tell us which unit it
-    // reports in, so this comes from config.yaml on the Pi.
+    // reports in, so this comes from config.yaml on the Pi (or from the
+    // runtime UI toggle, which writes back to config.yaml).
     const unit = d.temperature_unit === "F" ? "F" : "C";
     document.getElementById("valDrain").textContent = d.drain;
     document.getElementById("valTemp").innerHTML = `${d.pa_temp}&deg;${unit}`;
     document.getElementById("valVolt").textContent = d.voltage;
+
+    // Update the °C/°F toggle label so it shows the *other* unit you'd
+    // switch to. Stash the current unit on the element so the click
+    // handler knows what to flip to.
+    const toggle = document.getElementById("unitToggle");
+    if (toggle) {
+      const other = unit === "C" ? "F" : "C";
+      toggle.textContent = `→ °${other}`;
+      toggle.dataset.next = other;
+    }
 
     // 2K-FA extra temps (only rendered if applyModel revealed the row)
     if (currentModel.extraTemps) {

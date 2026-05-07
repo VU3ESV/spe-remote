@@ -131,6 +131,8 @@ logging:
 ```
 
 > **Temperature unit:** the SPE protocol returns temperatures unit-less — the amp doesn't tell us whether 33 means 33 °C or 33 °F. Set `amp.temperature_unit` to whichever your front-panel setup menu is configured for. The server stamps it onto every state update so the web client renders the correct symbol and scales the temperature gauge accordingly (0–80 in °C mode, 0–180 in °F mode).
+>
+> You can also flip it from the dashboard: there's a tiny **`→ °F`** / **`→ °C`** toggle next to the PA Temp gauge label. Clicking it sends `set_temp_unit:F` (or `:C`) over the WebSocket, the server updates in memory, **rewrites the line in `config.yaml`** so it survives restarts, and broadcasts the change to every connected client (browser + Node-RED + MacExpert) within a second. No SSH, no `systemctl restart`.
 
 **Finding your serial port:**
 
@@ -492,6 +494,7 @@ Clients send bare command names as WebSocket text messages. The server dispatche
 | `rcu_off`      | Disable RCU LCD mirror stream   |
 | `backlight_on` | Backlight on                    |
 | `backlight_off`| Backlight off                   |
+| `set_temp_unit:C` / `:F` | Switch temperature display unit live; persisted to `config.yaml` |
 
 > **Alias:** `gain` is kept as an alias for `power_level` for backward compatibility with the original OH2GEK client.
 
