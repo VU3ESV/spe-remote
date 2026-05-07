@@ -102,49 +102,91 @@
     }, 4000);
   }
 
-  // --- Model auto-detection ---
-  // Maps the SPE ID code (data[1] in the status string) to display name,
-  // power-bar full-scale wattage, tick labels, and whether to show the
-  // 2K-FA-only extra temp readings (lower heatsink + combiner).
+  // --- Model + power-level scaling ---
+  // MODELS holds the per-model bits that don't depend on the selected
+  // power level: display name and whether to surface the 2K-FA extra
+  // temp readings (lower heatsink + combiner).
   const MODELS = {
-    "13K": { name: "SPE 1.3K-FA", maxW: 1500, ticks: ["0","250","500","750","1.0k","1.3k","1.5k"], extraTemps: false },
-    "15K": { name: "SPE 1.5K-FA", maxW: 1500, ticks: ["0","250","500","750","1.0k","1.3k","1.5k"], extraTemps: false },
-    "20K": { name: "SPE 2K-FA",   maxW: 2000, ticks: ["0","250","500","1.0k","1.3k","1.5k","2.0k"], extraTemps: true },
+    "13K": { name: "SPE 1.3K-FA", extraTemps: false },
+    "15K": { name: "SPE 1.5K-FA", extraTemps: false },
+    "20K": { name: "SPE 2K-FA",   extraTemps: true  },
   };
-  const MODEL_DEFAULT = { name: "SPE Expert", maxW: 1500,
-    ticks: ["0","250","500","750","1.0k","1.3k","1.5k"], extraTemps: false };
+  const MODEL_DEFAULT = { name: "SPE Expert", extraTemps: false };
+
+  // Power-bar full-scale + tick labels per (model, p_level). p_level is
+  // L/M/H from the amp; values come from the SPE manuals for each model.
+  const LEVELS = {
+    "13K": {
+      L: { maxW: 500,  ticks: ["0","100","200","300","400","450","500"] },
+      M: { maxW: 800,  ticks: ["0","200","400","500","600","700","800"] },
+      H: { maxW: 1300, ticks: ["0","250","500","750","1.0k","1.2k","1.3k"] },
+    },
+    "15K": {
+      L: { maxW: 500,  ticks: ["0","100","200","300","400","450","500"] },
+      M: { maxW: 1000, ticks: ["0","200","400","500","600","800","1.0k"] },
+      H: { maxW: 1500, ticks: ["0","250","500","750","1.0k","1.3k","1.5k"] },
+    },
+    "20K": {
+      L: { maxW: 700,  ticks: ["0","150","300","400","500","600","700"] },
+      M: { maxW: 1400, ticks: ["0","250","500","750","1.0k","1.2k","1.4k"] },
+      H: { maxW: 2000, ticks: ["0","400","800","1.0k","1.3k","1.6k","2.0k"] },
+    },
+  };
+  // Fallback scale when neither model nor level has been heard from yet.
+  const SCALE_DEFAULT = { maxW: 1500, ticks: ["0","250","500","750","1.0k","1.3k","1.5k"] };
 
   let currentModelKey = "";
+  let currentLevelKey = "";
   let currentModel = MODEL_DEFAULT;
+  let currentScale = SCALE_DEFAULT;
 
   function applyModel(modelCode) {
-    if (modelCode === currentModelKey) return;  // No-op if unchanged
+    if (modelCode === currentModelKey) return;
     currentModelKey = modelCode;
     currentModel = MODELS[modelCode] || MODEL_DEFAULT;
 
-    // Header label
     document.getElementById("modelLabel").textContent = currentModel.name;
 
-    // Power-bar tick labels
-    const ticksEl = document.getElementById("powerTicks");
-    if (ticksEl) {
-      ticksEl.innerHTML = currentModel.ticks.map(t => `<span>${t}</span>`).join("");
-    }
-
-    // 2K-FA extra temps (lower heatsink + combiner)
     const extraEl = document.getElementById("extraTemps");
     if (extraEl) extraEl.style.display = currentModel.extraTemps ? "" : "none";
+
+    // Scale depends on (model, level); reapply with the current level
+    // because the model just changed underneath it.
+    applyScale(currentLevelKey, true);
+  }
+
+  // Pick the power-bar scale for the current (model, level). p_level is
+  // L/M/H once parsed; the dataclass default of "0" means we haven't seen
+  // a real frame yet, so fall back to H for the current model. forceRebuild
+  // is used by applyModel to redraw ticks when only the model changed.
+  function applyScale(levelCode, forceRebuild) {
+    const sameLevel = levelCode === currentLevelKey;
+    currentLevelKey = levelCode || "";
+    const levelTable = LEVELS[currentModelKey];
+    const next = (levelTable && levelTable[currentLevelKey])
+              || (levelTable && levelTable.H)
+              || SCALE_DEFAULT;
+    if (next === currentScale && sameLevel && !forceRebuild) return;
+    currentScale = next;
+
+    const ticksEl = document.getElementById("powerTicks");
+    if (ticksEl) {
+      ticksEl.innerHTML = currentScale.ticks.map(t => `<span>${t}</span>`).join("");
+    }
   }
 
   // --- UI Update ---
   function updateUI(d) {
-    // Model auto-detection (header, power scale, extra temps)
-    if (d.model !== undefined) applyModel(d.model || "");
+    // Model auto-detection (header + extra temps); scale is applied
+    // separately so it can react to the user changing the L/M/H level
+    // on the amp's front panel without the model itself changing.
+    if (d.model_id !== undefined) applyModel(d.model_id || "");
+    if (d.p_level !== undefined) applyScale(d.p_level || "");
 
     // Power
     const pOut = parseInt(d.p_out, 10) || 0;
     document.getElementById("powerValue").textContent = pOut;
-    const pct = Math.min((pOut / currentModel.maxW) * 100, 100);
+    const pct = Math.min((pOut / currentScale.maxW) * 100, 100);
     document.getElementById("powerBar").style.width = pct + "%";
 
     // SWR

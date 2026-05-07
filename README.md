@@ -422,13 +422,13 @@ The socket carries **three** kinds of server-to-client messages: JSON state upda
 
 ```json
 {
-  "model": "20K",
+  "model_id": "20K",
   "op_status": "Oper",
   "tx_status": "TX",
   "input": "1",
   "band": "80m",
   "tx_antenna": "1",
-  "p_level": "10",
+  "p_level": "H",
   "p_out": "1353",
   "swr": "1.54",
   "aswr": "1.12",
