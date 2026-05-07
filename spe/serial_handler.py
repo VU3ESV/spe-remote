@@ -81,16 +81,21 @@ class SerialHandler:
         polling_config: PollingConfig,
         on_state_update: Callable[[AmplifierState], None],
         on_rcu_frame: Optional[Callable[[bytes], None]] = None,
+        temperature_unit: str = "C",
     ):
         self.serial_config = serial_config
         self.polling_config = polling_config
         self.on_state_update = on_state_update
         self.on_rcu_frame = on_rcu_frame
+        # Stamped onto every parsed state so clients can render the right
+        # unit symbol. The amp itself doesn't tell us — has to be set
+        # in config.yaml to match the front-panel setup menu.
+        self.temperature_unit = "F" if str(temperature_unit).upper().startswith("F") else "C"
 
         self._port: serial.Serial | None = None
         self._connected = False
         self._running = False
-        self._state = AmplifierState()
+        self._state = AmplifierState(temperature_unit=self.temperature_unit)
 
         self._command_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._write_lock = threading.Lock()
@@ -440,6 +445,10 @@ class SerialHandler:
             line = payload.decode("ascii", errors="replace")
             state = parse_status(line)
             if state:
+                # Stamp the configured temperature unit onto every state.
+                # The protocol doesn't tell us C vs F, so without this the
+                # web client would have to assume one.
+                state.temperature_unit = self.temperature_unit
                 self._state = state
                 self.on_state_update(state)
         except Exception as e:

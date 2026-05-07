@@ -36,6 +36,7 @@ def main() -> None:
         polling_config=config.polling,
         on_state_update=AmplifierWebSocket.broadcast_state,
         on_rcu_frame=AmplifierWebSocket.broadcast_rcu_frame,
+        temperature_unit=config.amp.temperature_unit,
     )
 
     power_controller = PowerController(

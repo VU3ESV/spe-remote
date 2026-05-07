@@ -132,6 +132,11 @@ class AmplifierState:
     pa_temp: str = "0"           # Heatsink (upper on 2K-FA)
     pa_temp_lower: str = "0"     # Lower heatsink (2K-FA only; "000" on 1.3K-FA)
     pa_temp_combiner: str = "0"  # Combiner (2K-FA only)
+    # Unit the amp is configured to report temps in. The protocol does not
+    # carry this — it has to be set in config.yaml to match the amp's setup
+    # menu. The server stamps it onto every state so clients can render
+    # the right symbol and scale gauges. "C" or "F".
+    temperature_unit: str = "C"
     warnings: str = ""
     error: str = ""
 

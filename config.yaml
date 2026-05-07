@@ -12,5 +12,12 @@ polling:
   idle_interval: 1.0     # seconds between polls when idle (RX + Standby)
   heartbeat: 15          # seconds before forcing a state push even if unchanged
 
+amp:
+  # Must match the unit selected on the SPE front-panel setup menu —
+  # the protocol returns temperatures unit-less, so the server has to be
+  # told which unit they're in. Web client uses this to render °C / °F
+  # and to scale the temperature gauge.
+  temperature_unit: C    # C or F
+
 logging:
   level: INFO            # DEBUG, INFO, WARNING, ERROR

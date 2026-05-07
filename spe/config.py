@@ -27,10 +27,23 @@ class PollingConfig:
 
 
 @dataclass
+class AmpConfig:
+    """Amp-side characteristics that the protocol doesn't report.
+
+    The SPE returns temperatures as unit-less integers — the user picks
+    Celsius or Fahrenheit in the front-panel setup menu. This setting must
+    match that choice so the web client can render the right unit symbol
+    and scale gauges/thresholds correctly.
+    """
+    temperature_unit: str = "C"  # "C" or "F"
+
+
+@dataclass
 class AppConfig:
     serial: SerialConfig = field(default_factory=SerialConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     polling: PollingConfig = field(default_factory=PollingConfig)
+    amp: AmpConfig = field(default_factory=AmpConfig)
     log_level: str = "INFO"
 
 
@@ -56,6 +69,15 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             for k, v in raw["polling"].items():
                 if hasattr(config.polling, k):
                     setattr(config.polling, k, v)
+
+        if "amp" in raw:
+            for k, v in raw["amp"].items():
+                if hasattr(config.amp, k):
+                    setattr(config.amp, k, v)
+            # Normalise the unit to a single uppercase letter so downstream
+            # comparisons don't have to handle "c" / "celsius" / "F" / etc.
+            unit = str(config.amp.temperature_unit).strip().upper()[:1]
+            config.amp.temperature_unit = "F" if unit == "F" else "C"
 
         if "logging" in raw:
             config.log_level = raw["logging"].get("level", "INFO")

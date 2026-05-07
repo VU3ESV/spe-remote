@@ -139,9 +139,12 @@
     document.getElementById("swrDisplay").textContent = swrDisplay;
     document.getElementById("valSWR").textContent = `1:${d.swr}`;
 
-    // Drain, temp, voltage
+    // Drain, temp, voltage. The server stamps temperature_unit ("C"/"F")
+    // onto every state — the amp itself doesn't tell us which unit it
+    // reports in, so this comes from config.yaml on the Pi.
+    const unit = d.temperature_unit === "F" ? "F" : "C";
     document.getElementById("valDrain").textContent = d.drain;
-    document.getElementById("valTemp").innerHTML = `${d.pa_temp}&deg;C`;
+    document.getElementById("valTemp").innerHTML = `${d.pa_temp}&deg;${unit}`;
     document.getElementById("valVolt").textContent = d.voltage;
 
     // 2K-FA extra temps (only rendered if applyModel revealed the row)
@@ -150,6 +153,8 @@
       const cmb = document.getElementById("valTempCombiner");
       if (lwr && d.pa_temp_lower !== undefined) lwr.textContent = d.pa_temp_lower;
       if (cmb && d.pa_temp_combiner !== undefined) cmb.textContent = d.pa_temp_combiner;
+      // Update the °C / °F suffix on both extra-temp chips.
+      document.querySelectorAll(".tempUnitSuffix").forEach(el => el.textContent = unit);
     }
 
     // Info chips
@@ -183,7 +188,11 @@
     // Draw gauges
     drawGauge("gaugeSWR", parseFloat(d.swr) || 1, 1, 3.5, swrColors);
     drawGauge("gaugeDrain", parseFloat(d.drain) || 0, 0, 60, drainColors);
-    drawGauge("gaugeTemp", parseFloat(d.pa_temp) || 0, 0, 80, tempColors);
+    // Scale the temperature gauge by unit. 80°C ≈ 176°F so the Fahrenheit
+    // dial gets a 0–180 range; warning thresholds in tempColors are
+    // proportional, so they convert automatically.
+    const tempMax = unit === "F" ? 180 : 80;
+    drawGauge("gaugeTemp", parseFloat(d.pa_temp) || 0, 0, tempMax, tempColors);
     drawGauge("gaugeVolt", parseFloat(d.voltage) || 0, 40, 60, voltColors);
   }
 

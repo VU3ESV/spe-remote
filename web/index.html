@@ -44,7 +44,7 @@
     </div>
     <div class="gauge-card">
       <canvas id="gaugeTemp" width="120" height="80"></canvas>
-      <div class="gauge-reading" id="valTemp">0&deg;C</div>
+      <div class="gauge-reading" id="valTemp">--&deg;</div>
       <div class="gauge-label">PA Temp</div>
     </div>
     <div class="gauge-card">
@@ -56,8 +56,8 @@
 
   <!-- 2K-FA extra temps (lower heatsink + combiner). Hidden on 1.3K/1.5K. -->
   <div class="info-row" id="extraTemps" style="display:none">
-    <div class="chip"><span class="label">LWR HS</span> <span id="valTempLower">0</span>&deg;C</div>
-    <div class="chip"><span class="label">CMB</span> <span id="valTempCombiner">0</span>&deg;C</div>
+    <div class="chip"><span class="label">LWR HS</span> <span id="valTempLower">--</span>&deg;<span class="tempUnitSuffix">C</span></div>
+    <div class="chip"><span class="label">CMB</span> <span id="valTempCombiner">--</span>&deg;<span class="tempUnitSuffix">C</span></div>
   </div>
 
   <!-- Info chips -->

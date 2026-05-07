@@ -123,9 +123,14 @@ polling:
   idle_interval: 1.0     # Poll rate during RX/Standby
   heartbeat: 15          # Force state push interval
 
+amp:
+  temperature_unit: C    # Must match the SPE setup-menu unit (C or F)
+
 logging:
   level: INFO
 ```
+
+> **Temperature unit:** the SPE protocol returns temperatures unit-less — the amp doesn't tell us whether 33 means 33 °C or 33 °F. Set `amp.temperature_unit` to whichever your front-panel setup menu is configured for. The server stamps it onto every state update so the web client renders the correct symbol and scales the temperature gauge accordingly (0–80 in °C mode, 0–180 in °F mode).
 
 **Finding your serial port:**
 
@@ -430,6 +435,7 @@ The socket carries **three** kinds of server-to-client messages: JSON state upda
   "pa_temp": "26",
   "pa_temp_lower": "24",
   "pa_temp_combiner": "23",
+  "temperature_unit": "C",
   "warnings": "",
   "error": ""
 }
