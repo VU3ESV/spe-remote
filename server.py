@@ -10,6 +10,7 @@ import asyncio
 import logging
 import signal
 import sys
+from pathlib import Path
 
 import tornado.ioloop
 
@@ -21,7 +22,21 @@ from spe.websocket_handler import AmplifierWebSocket
 
 
 def main() -> None:
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+    # Distinguish "user passed a path" from "no arg, fall back to default":
+    # if a path is given explicitly it must exist, so a typo or copy-pasted
+    # placeholder fails loudly instead of silently running on defaults.
+    # Bare invocation with no arg keeps the original tolerant behaviour
+    # (load_config logs a warning and uses defaults if config.yaml is absent).
+    if len(sys.argv) > 1:
+        config_path = sys.argv[1]
+        if not Path(config_path).exists():
+            print(
+                f"error: config file {config_path!r} not found",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        config_path = "config.yaml"
     config = load_config(config_path)
 
     logging.basicConfig(

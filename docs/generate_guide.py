@@ -324,8 +324,13 @@ def build_pdf(output_path):
     story.append(code("nohup ./run.sh &"))
     story.append(Paragraph("Or start directly with the venv Python:", style_body))
     story.append(code("venv/bin/python server.py"))
-    story.append(Paragraph("With a custom config:", style_body))
-    story.append(code("venv/bin/python server.py /path/to/custom-config.yaml"))
+    story.append(Paragraph(
+        "With a custom config — pass the path to your YAML config file as "
+        "the first argument. The file must exist; if it doesn't, the server "
+        "exits with an error rather than silently falling back to defaults.",
+        style_body,
+    ))
+    story.append(code("venv/bin/python server.py YOUR-CONFIG.yaml"))
     story.append(Paragraph("On successful startup you will see:", style_body))
     story.append(code(
         "[INFO] spe: Server listening on http://0.0.0.0:8888/<br/>"
