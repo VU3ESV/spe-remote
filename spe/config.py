@@ -24,8 +24,9 @@ class ServerConfig:
 class PollingConfig:
     tx_interval: float = 0.2
     idle_interval: float = 1.0
-    heartbeat: float = 15.0          # force state re-broadcast every N s
-    presence_heartbeat: float = 5.0  # presence/serial-status heartbeat msg every N s
+    heartbeat: float = 15.0              # force state re-broadcast every N s
+    presence_heartbeat: float = 5.0      # presence/serial-status heartbeat msg every N s
+    amp_alive_threshold: float = 3.0     # frames within N s ⇒ amp considered "up"
 
 
 @dataclass

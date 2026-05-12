@@ -23,18 +23,30 @@ from spe.power_control import PowerController
 from spe.websocket_handler import AmplifierWebSocket
 
 
-async def presence_heartbeat_loop(serial_handler: SerialHandler, interval: float) -> None:
+async def presence_heartbeat_loop(
+    serial_handler: SerialHandler,
+    interval: float,
+    amp_alive_threshold: float,
+) -> None:
     """Periodically broadcast a presence heartbeat to all WebSocket clients.
 
     Distinct from :attr:`PollingConfig.heartbeat`, which forces a state
     re-broadcast on the existing channel. This loop emits a separate
     ``{"heartbeat": True, "serial": "up"|"down", ...}`` message at a
     short, fixed cadence regardless of whether amp serial frames are
-    flowing. Two consequences clients depend on:
+    flowing.
 
-    1. They learn within ``interval`` seconds that the amp went off —
-       the serial-down transition no longer requires a fresh WS connect
-       + snapshot to see.
+    ``serial`` reports **amp liveness**, not USB-link state. The FTDI
+    cable stays USB-connected to the Pi even when the amp's CPU is dead,
+    so ``serial_handler.connected`` would lie. Instead, ``serial: "up"``
+    iff a CSV frame has been parsed within ``amp_alive_threshold``
+    seconds.
+
+    Two consequences clients depend on:
+
+    1. They learn within ``interval + amp_alive_threshold`` seconds that
+       the amp went off — the serial-down transition no longer requires
+       a fresh WS connect + snapshot to see.
     2. They see *something* flowing every ``interval`` seconds, which
        prevents heartbeat-based client reconnect loops (e.g. MacExpert
        reconnecting every 5 s when no msgs arrive).
@@ -43,9 +55,10 @@ async def presence_heartbeat_loop(serial_handler: SerialHandler, interval: float
     while True:
         try:
             await asyncio.sleep(interval)
+            alive = serial_handler.last_state_age < amp_alive_threshold
             msg = json.dumps({
                 "heartbeat": True,
-                "serial": "up" if serial_handler.connected else "down",
+                "serial": "up" if alive else "down",
                 "ts": time.time(),
                 "clients": len(AmplifierWebSocket.clients),
             })
@@ -135,10 +148,15 @@ def main() -> None:
     # Start serial handler + presence-heartbeat as async tasks
     serial_task = loop.create_task(serial_handler.start())
     heartbeat_task = loop.create_task(
-        presence_heartbeat_loop(serial_handler, config.polling.presence_heartbeat)
+        presence_heartbeat_loop(
+            serial_handler,
+            config.polling.presence_heartbeat,
+            config.polling.amp_alive_threshold,
+        )
     )
     logger.info(
-        f"Presence heartbeat every {config.polling.presence_heartbeat:.1f}s"
+        f"Presence heartbeat every {config.polling.presence_heartbeat:.1f}s "
+        f"(amp_alive_threshold={config.polling.amp_alive_threshold:.1f}s)"
     )
 
     try:

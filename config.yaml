@@ -16,6 +16,11 @@ polling:
                              # Lets clients detect amp-off transitions and prevents
                              # idle-WS reconnect loops in clients with their own
                              # heartbeat-watchdogs (e.g. MacExpert).
+  amp_alive_threshold: 3     # max age (s) of the last parsed amp CSV frame for
+                             # the heartbeat to report serial:'up'. Detects amp
+                             # power-off when the FTDI cable stays connected to
+                             # the Pi (FTDI USB-powered → link stays open even
+                             # when the amp's CPU is dead).
 
 amp:
   # Must match the unit selected on the SPE front-panel setup menu —

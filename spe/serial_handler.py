@@ -106,10 +106,29 @@ class SerialHandler:
 
         self._buffer = bytearray()
         self._last_byte_at: float = 0.0
+        # Monotonic timestamp of the most recently parsed CSV state frame.
+        # 0.0 means "no frame yet seen this session." Used to detect the
+        # amp going dark even though the FTDI port is still open (e.g.
+        # amp powered off while the USB-serial cable stays connected to
+        # the Pi). Exposed via ``last_state_age``.
+        self._last_state_at: float = 0.0
 
     @property
     def state(self) -> AmplifierState:
         return self._state
+
+    @property
+    def last_state_age(self) -> float:
+        """Seconds since the last successful CSV state-frame parse.
+
+        Returns ``float('inf')`` if no frame has been seen this session.
+        Use this to detect "amp is off but port is still open" — the
+        ``connected`` property only reflects USB-FTDI link state, which
+        stays True even when the amp's CPU is dead.
+        """
+        if self._last_state_at == 0.0:
+            return float("inf")
+        return time.monotonic() - self._last_state_at
 
     @property
     def connected(self) -> bool:
@@ -469,6 +488,7 @@ class SerialHandler:
                 # web client would have to assume one.
                 state.temperature_unit = self.temperature_unit
                 self._state = state
+                self._last_state_at = time.monotonic()
                 self.on_state_update(state)
         except Exception as e:
             logger.warning(f"CSV parse failed: {e}")
