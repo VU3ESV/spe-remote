@@ -24,7 +24,8 @@ class ServerConfig:
 class PollingConfig:
     tx_interval: float = 0.2
     idle_interval: float = 1.0
-    heartbeat: float = 15.0
+    heartbeat: float = 15.0          # force state re-broadcast every N s
+    presence_heartbeat: float = 5.0  # presence/serial-status heartbeat msg every N s
 
 
 @dataclass

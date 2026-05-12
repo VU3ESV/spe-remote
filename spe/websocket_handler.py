@@ -122,6 +122,22 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
         cls.clients -= dead_clients
 
     @classmethod
+    def broadcast_raw(cls, msg: str) -> None:
+        """Broadcast an already-serialised JSON string to every connected
+        client. Bypasses the state-dedup / min-interval gate that
+        :meth:`broadcast_state` enforces. Use for presence heartbeats and
+        any other message type whose cadence is driven independently of
+        amp state changes."""
+        dead_clients = set()
+        for client in cls.clients:
+            try:
+                client.write_message(msg)
+            except tornado.websocket.WebSocketClosedError:
+                dead_clients.add(client)
+
+        cls.clients -= dead_clients
+
+    @classmethod
     def broadcast_rcu_frame(cls, payload: bytes) -> None:
         """Broadcast a raw RCU LCD display frame to all clients as a binary
         WebSocket message. The payload is the bytes after the ``AA AA AA 6A``

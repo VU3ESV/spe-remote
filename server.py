@@ -7,9 +7,11 @@ a web-based remote control interface over WebSocket.
 """
 
 import asyncio
+import json
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
 import tornado.ioloop
@@ -19,6 +21,40 @@ from spe.app import make_app
 from spe.serial_handler import SerialHandler
 from spe.power_control import PowerController
 from spe.websocket_handler import AmplifierWebSocket
+
+
+async def presence_heartbeat_loop(serial_handler: SerialHandler, interval: float) -> None:
+    """Periodically broadcast a presence heartbeat to all WebSocket clients.
+
+    Distinct from :attr:`PollingConfig.heartbeat`, which forces a state
+    re-broadcast on the existing channel. This loop emits a separate
+    ``{"heartbeat": True, "serial": "up"|"down", ...}`` message at a
+    short, fixed cadence regardless of whether amp serial frames are
+    flowing. Two consequences clients depend on:
+
+    1. They learn within ``interval`` seconds that the amp went off —
+       the serial-down transition no longer requires a fresh WS connect
+       + snapshot to see.
+    2. They see *something* flowing every ``interval`` seconds, which
+       prevents heartbeat-based client reconnect loops (e.g. MacExpert
+       reconnecting every 5 s when no msgs arrive).
+    """
+    logger = logging.getLogger("spe.heartbeat")
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            msg = json.dumps({
+                "heartbeat": True,
+                "serial": "up" if serial_handler.connected else "down",
+                "ts": time.time(),
+                "clients": len(AmplifierWebSocket.clients),
+            })
+            AmplifierWebSocket.broadcast_raw(msg)
+        except asyncio.CancelledError:
+            logger.info("presence_heartbeat_loop cancelled")
+            break
+        except Exception:
+            logger.exception("presence_heartbeat_loop error; continuing")
 
 
 def main() -> None:
@@ -96,18 +132,25 @@ def main() -> None:
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Start serial handler as async task
+    # Start serial handler + presence-heartbeat as async tasks
     serial_task = loop.create_task(serial_handler.start())
+    heartbeat_task = loop.create_task(
+        presence_heartbeat_loop(serial_handler, config.polling.presence_heartbeat)
+    )
+    logger.info(
+        f"Presence heartbeat every {config.polling.presence_heartbeat:.1f}s"
+    )
 
     try:
         tornado.ioloop.IOLoop.current().start()
     finally:
-        # Ensure serial task is cancelled if still running
-        try:
-            if not serial_task.done():
-                serial_task.cancel()
-        except Exception:
-            pass
+        # Ensure background tasks are cancelled if still running
+        for task in (serial_task, heartbeat_task):
+            try:
+                if not task.done():
+                    task.cancel()
+            except Exception:
+                pass
 
         # Make a best-effort to stop serial handler and close resources
         try:

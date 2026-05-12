@@ -8,9 +8,14 @@ server:
   host: "0.0.0.0"
 
 polling:
-  tx_interval: 0.2      # seconds between polls during TX/Operate
-  idle_interval: 1.0     # seconds between polls when idle (RX + Standby)
-  heartbeat: 15          # seconds before forcing a state push even if unchanged
+  tx_interval: 0.2          # seconds between polls during TX/Operate
+  idle_interval: 1.0         # seconds between polls when idle (RX + Standby)
+  heartbeat: 15              # seconds before forcing a state push even if unchanged
+  presence_heartbeat: 5      # seconds between presence heartbeat msgs
+                             # ({heartbeat:true, serial:'up'|'down', ts, clients}).
+                             # Lets clients detect amp-off transitions and prevents
+                             # idle-WS reconnect loops in clients with their own
+                             # heartbeat-watchdogs (e.g. MacExpert).
 
 amp:
   # Must match the unit selected on the SPE front-panel setup menu —
