@@ -112,6 +112,11 @@ class SerialHandler:
         # amp powered off while the USB-serial cable stays connected to
         # the Pi). Exposed via ``last_state_age``.
         self._last_state_at: float = 0.0
+        # Same idea for RCU display frames. STANDBY emits CSV slower than
+        # the alive-threshold, so without an RCU liveness signal the
+        # presence heartbeat would flip to serial:"down" even though the
+        # amp is fine. Exposed via ``last_rcu_age``.
+        self._last_rcu_at: float = 0.0
 
     @property
     def state(self) -> AmplifierState:
@@ -129,6 +134,19 @@ class SerialHandler:
         if self._last_state_at == 0.0:
             return float("inf")
         return time.monotonic() - self._last_state_at
+
+    @property
+    def last_rcu_age(self) -> float:
+        """Seconds since the most recent RCU display frame arrived.
+
+        Returns ``float('inf')`` if no RCU frame has been seen this
+        session. Pair with ``last_state_age`` for a true "amp on the
+        wire" signal — STANDBY slows CSV below the heartbeat threshold
+        but the RCU OFF→ON ticker keeps frames flowing every ~1.5 s.
+        """
+        if self._last_rcu_at == 0.0:
+            return float("inf")
+        return time.monotonic() - self._last_rcu_at
 
     @property
     def connected(self) -> bool:
@@ -519,6 +537,9 @@ class SerialHandler:
         self._emit_rcu_frame(payload)
 
     def _emit_rcu_frame(self, payload: bytes) -> None:
+        # Stamp liveness unconditionally — even with no RCU consumer
+        # subscribed, an arrived frame still proves the amp is alive.
+        self._last_rcu_at = time.monotonic()
         if not self.on_rcu_frame:
             return
         try:

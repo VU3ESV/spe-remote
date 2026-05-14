@@ -39,8 +39,11 @@ async def presence_heartbeat_loop(
     ``serial`` reports **amp liveness**, not USB-link state. The FTDI
     cable stays USB-connected to the Pi even when the amp's CPU is dead,
     so ``serial_handler.connected`` would lie. Instead, ``serial: "up"``
-    iff a CSV frame has been parsed within ``amp_alive_threshold``
-    seconds.
+    iff a CSV state frame OR an RCU display frame has been parsed within
+    ``amp_alive_threshold`` seconds. CSV alone is insufficient because
+    the amp slows CSV emission in STANDBY below the heartbeat threshold,
+    which would otherwise produce false serial:"down" → POWERED OFF
+    banners on clients while the amp is fine.
 
     Two consequences clients depend on:
 
@@ -55,7 +58,10 @@ async def presence_heartbeat_loop(
     while True:
         try:
             await asyncio.sleep(interval)
-            alive = serial_handler.last_state_age < amp_alive_threshold
+            alive = min(
+                serial_handler.last_state_age,
+                serial_handler.last_rcu_age,
+            ) < amp_alive_threshold
             msg = json.dumps({
                 "heartbeat": True,
                 "serial": "up" if alive else "down",
