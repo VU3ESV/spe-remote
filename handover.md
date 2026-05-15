@@ -2,8 +2,8 @@
 
 **Repo:** `~/projects/spe-remote` (canonical; the copy under `~/Documents/Claude/code/spe-remote` is stale, do not touch)
 **Branch:** `main`, clean, in sync with `origin/main`
-**Last commit:** `aca6c8c` — heartbeat: count RCU frames toward amp liveness, not just CSV
-**Date:** 2026-05-14
+**Last commit:** parse_status drops CSV frames with unexpected op/tx field values
+**Date:** 2026-05-15
 
 ## What this project is
 
@@ -33,16 +33,17 @@ docs/                  protocol notes, Node-RED sample flow
 
 ## Recent work (newest first)
 
-1. **`power_on` clients consolidated on the WebSocket path (2026-05-15)** — the Node-RED `vu2cpl-shack` flow used to run a separate Pi-side `exec` node that spawned `python3 /home/vu2cpl/power_spe_on.py` for its `ON_SPE` button, on the (incorrect) theory that the WS server couldn't wake a powered-off amp because the serial *data* link was dead. In fact `spe/power_control.py` `_power_on_sync()` does the same DTR/RTS sequence on the already-open serial handle — and the FTDI hardware lines are controllable via ioctl regardless of whether the amp's CPU is alive. **Correct client-side behaviour:** send the string `power_on` over WebSocket → the server toggles DTR (`DTR=1 → DTR=0 → RTS=1 → wait 1 s → DTR=1 → RTS=0`) → amp starts in 3–4.5 s → the server replies with a `power_result` JSON ack on the same socket. **Do not have other clients spawn `power_spe_on.py` while this service is running** — both would try to manipulate `/dev/ttyUSB0`, you'd hit the same FTDI-handle contention that the Serial-stack fixes (item 8 below) cleaned up. Standalone `power_spe_on.py` in this repo stays as a fallback tool only for the case where `spe-remote.service` itself is down. Documented in `vu2cpl-shack` CLAUDE.md + SHACK_CHANGELOG (commit `fa0a18d`).
-2. **RCU counts toward heartbeat liveness** — `serial_handler` now stamps `_last_rcu_at` on every emitted RCU frame and exposes `last_rcu_age`. `presence_heartbeat_loop` reports `serial:"up"` if EITHER CSV or RCU is fresher than `amp_alive_threshold`. Fixes the "POWERED OFF banner appears in STANDBY" bug: the amp slows CSV in STANDBY below the 3 s threshold, but the RCU OFF→ON ticker forces fresh display frames every 1.5 s, so RCU liveness keeps the heartbeat honest. The Pi's local `config.yaml` had been tweaked to `tx_interval: 0.1` / `idle_interval: 0.4` as a workaround — that's still in effect but no longer load-bearing for this bug.
-3. **Live °C/°F toggle** (`de5c99e`, `1c638bc`) — temperature unit is now configurable via `config.yaml` (`amp.temperature_unit: C|F`) and toggleable from the dashboard; the server writes the change back to YAML so it survives restart. The SPE protocol returns temperatures unit-less, so the server has to be told which unit the front panel is set to.
-4. **README rewrite** (`af38e82`) — leads with the multi-client architecture diagram and the systemd install path.
-5. **systemd installer** (`617c8b3`) — `install-service.sh` / `uninstall-service.sh` plus a sample Node-RED flow.
-6. **Field rename** (`fd01936`) — JSON `model` → `model_id` to line up with the MacExpert decoder.
-7. **Auto-detect amp model** (`9c0daaf`, `58c389a`) — scans the first 3 CSV fields of the status string for the model ID pattern and adapts the UI; robust against firmware variants.
-8. **Python 3.9 compatibility** (`cd427c0`) — needed because Raspberry Pi OS Bookworm ships 3.9.
-9. **Serial-stack fixes** (`3f69277`, `e1eec59`, `4f2bf2e`, `c3e48b9`) — the painful run: don't open a second pyserial handle for power control (was wedging the FTDI), restored `port.flush()` with write back-pressure, stopped saturating the amp's serial buffer by slowing the RCU tick and not speed-polling in OPER. Resolved the freeze that the diagnostic logging exposed.
-10. **Reverted** (`d6fe518`, `94fe469`) — the FTDI settle / multi-port auto-discovery experiment was rolled back; the simple single-port approach won.
+1. **Strict CSV parse: drop torn frames instead of misclassifying them as STBY/RX (2026-05-15)** — `parse_status` used to map `data[2]=="O"→Oper, else Stby` and `data[3]=="T"→TX, else RX`. At aggressive poll rates (the local `tx_interval: 0.1` workaround) a torn / shifted CSV frame would land an unexpected byte at one of those positions and silently produce `op_status="Stby"` mid-transmission, which MacExpert dutifully rendered as a STANDBY-banner flicker while the amp was happily in OPER+TX. New behaviour: validate `data[2] ∈ {O,S}` and `data[3] ∈ {T,R}` (after `.strip()` to tolerate the occasional whitespace padding) and return None with a WARNING log on anything else, so the bad frame just doesn't broadcast and the next clean poll picks up where we left off. If the WARN log shows hits during normal use, the underlying fix is to revert `tx_interval` to the 0.2 default — but the strict parser keeps the symptom invisible regardless.
+2. **`power_on` clients consolidated on the WebSocket path (2026-05-15)** — the Node-RED `vu2cpl-shack` flow used to run a separate Pi-side `exec` node that spawned `python3 /home/vu2cpl/power_spe_on.py` for its `ON_SPE` button, on the (incorrect) theory that the WS server couldn't wake a powered-off amp because the serial *data* link was dead. In fact `spe/power_control.py` `_power_on_sync()` does the same DTR/RTS sequence on the already-open serial handle — and the FTDI hardware lines are controllable via ioctl regardless of whether the amp's CPU is alive. **Correct client-side behaviour:** send the string `power_on` over WebSocket → the server toggles DTR (`DTR=1 → DTR=0 → RTS=1 → wait 1 s → DTR=1 → RTS=0`) → amp starts in 3–4.5 s → the server replies with a `power_result` JSON ack on the same socket. **Do not have other clients spawn `power_spe_on.py` while this service is running** — both would try to manipulate `/dev/ttyUSB0`, you'd hit the same FTDI-handle contention that the Serial-stack fixes (item 8 below) cleaned up. Standalone `power_spe_on.py` in this repo stays as a fallback tool only for the case where `spe-remote.service` itself is down. Documented in `vu2cpl-shack` CLAUDE.md + SHACK_CHANGELOG (commit `fa0a18d`).
+3. **RCU counts toward heartbeat liveness** — `serial_handler` now stamps `_last_rcu_at` on every emitted RCU frame and exposes `last_rcu_age`. `presence_heartbeat_loop` reports `serial:"up"` if EITHER CSV or RCU is fresher than `amp_alive_threshold`. Fixes the "POWERED OFF banner appears in STANDBY" bug: the amp slows CSV in STANDBY below the 3 s threshold, but the RCU OFF→ON ticker forces fresh display frames every 1.5 s, so RCU liveness keeps the heartbeat honest. The Pi's local `config.yaml` had been tweaked to `tx_interval: 0.1` / `idle_interval: 0.4` as a workaround — that's still in effect but no longer load-bearing for this bug.
+4. **Live °C/°F toggle** (`de5c99e`, `1c638bc`) — temperature unit is now configurable via `config.yaml` (`amp.temperature_unit: C|F`) and toggleable from the dashboard; the server writes the change back to YAML so it survives restart. The SPE protocol returns temperatures unit-less, so the server has to be told which unit the front panel is set to.
+5. **README rewrite** (`af38e82`) — leads with the multi-client architecture diagram and the systemd install path.
+6. **systemd installer** (`617c8b3`) — `install-service.sh` / `uninstall-service.sh` plus a sample Node-RED flow.
+7. **Field rename** (`fd01936`) — JSON `model` → `model_id` to line up with the MacExpert decoder.
+8. **Auto-detect amp model** (`9c0daaf`, `58c389a`) — scans the first 3 CSV fields of the status string for the model ID pattern and adapts the UI; robust against firmware variants.
+9. **Python 3.9 compatibility** (`cd427c0`) — needed because Raspberry Pi OS Bookworm ships 3.9.
+10. **Serial-stack fixes** (`3f69277`, `e1eec59`, `4f2bf2e`, `c3e48b9`) — the painful run: don't open a second pyserial handle for power control (was wedging the FTDI), restored `port.flush()` with write back-pressure, stopped saturating the amp's serial buffer by slowing the RCU tick and not speed-polling in OPER. Resolved the freeze that the diagnostic logging exposed.
+11. **Reverted** (`d6fe518`, `94fe469`) — the FTDI settle / multi-port auto-discovery experiment was rolled back; the simple single-port approach won.
 
 ## Architecture invariants — don't break these
 
@@ -51,6 +52,45 @@ docs/                  protocol notes, Node-RED sample flow
 - **Mixed-client broadcast on the same WS.** Text JSON for browsers, binary RCU frames for MacExpert. Same socket, dispatched by message type.
 - **Python 3.9 floor.** No `match` statements, no `X | Y` type unions in runtime code. Bookworm Pi is the deployment target.
 - **No saturating the amp.** TX-poll interval and RCU tick rate were tuned by trial; bumping them up will wedge the amp's serial buffer again.
+
+## Power control — how the button actually works
+
+Power ON and OFF use **different mechanisms** because the SPE protocol has no "power on" command — only "off". Documenting the full call path here so future-Manoj doesn't have to re-derive it from the code.
+
+**Power ON** (hardware DTR/RTS toggle):
+
+```
+browser button
+  → WS text frame "power_on"
+  → spe/websocket_handler.py  _handle_power("power_on")
+  → spe/power_control.py      PowerController.power_on()
+  → run_in_executor → _power_on_sync()
+  → ioctls on SerialHandler._port (the already-open FTDI handle):
+      DTR=1 → DTR=0 → RTS=1 → sleep 1s → DTR=1 → RTS=0
+  → amp boots in 3–4.5 s
+  → server replies with {"power_result":"power_on","status":"ok"}
+```
+
+**Power OFF** (serial command, not hardware lines):
+
+```
+browser button
+  → WS text frame "power_off"
+  → _handle_power("power_off")
+  → PowerController.power_off()
+  → SerialHandler.send_command("power_off")
+  → command byte 0x0A goes out on the same serial port (SWITCH OFF, per
+    SPE Application Programmer's Guide Rev 1.1)
+```
+
+**Why `_power_on_sync` reaches into `SerialHandler._port` directly** instead of opening its own `serial.Serial(...)`: pyserial's `open()` reconfigures termios and toggles DTR/RTS as a side effect. The original code did open a second handle (mirroring OH2GEK's standalone `power_spe_on.py`) and it wedged the FTDI driver on the second power action in a session. The fix in commit `3f69277` was to assign `.dtr` / `.rts` directly on the existing fd — those are pure ioctls, no termios churn, no second handle. **If you ever find yourself "cleaning this up" by opening a fresh Serial(), re-read that commit first.**
+
+**Side effects of the DTR sequence:**
+
+- While DTR is held high, the amp's front-panel power switch is overridden. The front panel shows `POWER SWITCH HELD BY REMOTE`.
+- The hardware lines work whether the amp's CPU is alive or not — that's the whole point. The 2026-05-15 client-consolidation work (Recent work item 1) was triggered by a Node-RED flow that wrongly assumed the WS path couldn't wake a powered-off amp because the *data* link was dead. The data link is irrelevant; DTR is a separate wire.
+
+**Standalone `power_spe_on.py` at the repo root** is the OH2GEK original. Kept as a fallback for the case where `spe-remote.service` itself is down. **Do not invoke it while the service is running** — that's the second-pyserial-handle trap the architecture-invariant section warns about.
 
 ## Config (`config.yaml`)
 

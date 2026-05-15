@@ -165,8 +165,28 @@ def parse_status(line: str) -> AmplifierState | None:
         return None
 
     try:
-        op_status = "Oper" if data[2] == "O" else "Stby"
-        tx_status = "TX" if data[3] == "T" else "RX"
+        # Validate the op-mode and TX-state fields strictly. The original
+        # code mapped data[2]=="O"→Oper and "any other value"→Stby (same
+        # for data[3]=="T"→TX, else RX). At aggressive poll rates a torn
+        # / partially-overlapping CSV frame can land an unexpected byte
+        # here — e.g. a shifted field or a stray whitespace — and the
+        # lenient fallback silently flips op_status to "Stby" in the
+        # middle of OPER+TX, producing a visible STANDBY-banner flicker
+        # on the MacExpert client. Treat anything outside the known
+        # alphabet as a corrupted frame and drop it; the next clean
+        # poll will recover. Logged at WARNING so the trigger is
+        # diagnosable without DEBUG.
+        raw_op = data[2].strip()
+        raw_tx = data[3].strip()
+        if raw_op not in ("O", "S") or raw_tx not in ("T", "R"):
+            logger.warning(
+                f"Dropping CSV frame with unexpected op/tx fields: "
+                f"data[2]={data[2]!r} data[3]={data[3]!r} "
+                f"len={len(data)}"
+            )
+            return None
+        op_status = "Oper" if raw_op == "O" else "Stby"
+        tx_status = "TX" if raw_tx == "T" else "RX"
 
         # Extra temps only meaningful on 2K-FA (1.3K-FA reports "000").
         # Indexed defensively in case a short / oddly-padded line slips through.
