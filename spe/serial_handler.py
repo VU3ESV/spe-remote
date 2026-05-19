@@ -117,6 +117,11 @@ class SerialHandler:
         # presence heartbeat would flip to serial:"down" even though the
         # amp is fine. Exposed via ``last_rcu_age``.
         self._last_rcu_at: float = 0.0
+        # Last broadcast op_status — used to log transitions at WARNING
+        # so unexpected Oper↔Stby flips during TX (typical RF-on-FTDI
+        # corruption signature) show up in journald without DEBUG noise.
+        # Diagnostic-only; no behaviour change.
+        self._prev_op_status: str = ""
 
     @property
     def state(self) -> AmplifierState:
@@ -505,6 +510,22 @@ class SerialHandler:
                 # The protocol doesn't tell us C vs F, so without this the
                 # web client would have to assume one.
                 state.temperature_unit = self.temperature_unit
+                # Diagnostic: log every op_status transition with the raw
+                # decoded line + parsed (op,tx). Helps tell apart:
+                #   - amp legitimately blipping to Stby (firmware quirk
+                #     during band/ant switch / ATU tune / cmd ack);
+                #   - RF-corrupted FTDI bytes producing fake Stby during
+                #     high-power TX (the leading suspect for "continuous
+                #     STANDBY flash during TX");
+                #   - Node-RED or another WS client toggling oper/stby.
+                # WARNING level so it surfaces in journald without DEBUG.
+                if state.op_status != self._prev_op_status:
+                    logger.warning(
+                        f"op_status transition: "
+                        f"{self._prev_op_status or '(init)'} -> {state.op_status} "
+                        f"(tx={state.tx_status}) raw={line!r}"
+                    )
+                    self._prev_op_status = state.op_status
                 self._state = state
                 self._last_state_at = time.monotonic()
                 self.on_state_update(state)
