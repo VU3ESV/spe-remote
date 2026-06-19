@@ -41,12 +41,18 @@ from spe.protocol import (
 
 logger = logging.getLogger(__name__)
 
-# RCU OFF->ON cycle cadence. Calmer values keep the USB-serial relaxed;
-# the amp only emits one frame per display change so over-ticking just
-# generates redundant traffic.
-_RCU_TICK_INTERVAL = 1.5  # seconds — keeps the live cursor mirror
-                          # responsive without flooding the amp's small
-                          # serial input buffer.
+# RCU OFF->ON cycle cadence. The amp only emits one frame per
+# RCU_ON request AND only when the display has changed since the
+# last frame, so this interval is the worst-case latency for the
+# app to discover front-panel events (TUNE LED toggle, cursor
+# nav, screen switch). 0.5 s gives near-real-time tracking of
+# the TUNE LED while staying clear of the amp's serial-buffer
+# saturation envelope. Previously 1.5 s — bumped down 2026-06-19
+# when MacExpert's TUNE LED indicator (driven by byte 4 bit 6 in
+# the RCU frame) felt noticeably laggy against the front panel.
+# If a regression appears (cursor flicker, freezes, dropped
+# frames), back off to 1.0 s before going further.
+_RCU_TICK_INTERVAL = 0.5  # seconds
 _RCU_OFF_ON_GAP = 0.05    # seconds
 
 # Force-flush an unterminated RCU frame if no new bytes arrive for this
