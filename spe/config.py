@@ -37,6 +37,24 @@ class PollingConfig:
 
 
 @dataclass
+class FlexConfig:
+    """Connection to the rig that drives the SPE.
+
+    Phase 1 of the band-sweep work (see spe/flex.py) — the client lives
+    on the Pi alongside the existing serial machinery, no integration
+    with the main poll/broadcast loops yet. Set ``enabled: true`` and
+    fill in ``host`` to let the upcoming tune-flow orchestrator find
+    the radio. Leaving ``enabled: false`` (the default) keeps spe-remote
+    behaving exactly as before.
+    """
+    enabled: bool = False
+    host: str = ""              # Static LAN IP of the Flex (e.g. 192.168.1.148)
+    port: int = 4992            # SmartSDR TCP control port
+    slice_rx: int = 0           # Which slice to drive during tune cycles
+    tune_power_watts: int = 10  # Carrier power for ATU tunes; SPE wants 2-15W
+
+
+@dataclass
 class AmpConfig:
     """Amp-side characteristics that the protocol doesn't report.
 
@@ -54,6 +72,7 @@ class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     polling: PollingConfig = field(default_factory=PollingConfig)
     amp: AmpConfig = field(default_factory=AmpConfig)
+    flex: FlexConfig = field(default_factory=FlexConfig)
     log_level: str = "INFO"
 
 
@@ -126,6 +145,11 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             # comparisons don't have to handle "c" / "celsius" / "F" / etc.
             unit = str(config.amp.temperature_unit).strip().upper()[:1]
             config.amp.temperature_unit = "F" if unit == "F" else "C"
+
+        if "flex" in raw:
+            for k, v in raw["flex"].items():
+                if hasattr(config.flex, k):
+                    setattr(config.flex, k, v)
 
         if "logging" in raw:
             config.log_level = raw["logging"].get("level", "INFO")
