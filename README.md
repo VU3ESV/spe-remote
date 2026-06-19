@@ -10,6 +10,7 @@ A modern Python 3 remote control server for **SPE Expert** HF amplifiers (1.3K-F
 - **Power On/Off** — remote power control via DTR line (on) and serial command 0x0A (off)
 - **Full SPE protocol** — all commands from the official Application Programmer's Guide Rev 1.1, plus undocumented RCU commands
 - **RCU (Remote Control Unit) mode** — live LCD display mirror streamed as binary frames; compatible with the MacExpert companion app
+- **Orchestrated TUNE + band sweep** — drives a Flex 6000-series rig over SmartSDR TCP API; runs the SM5TOG-style ATU tune flow (carrier on → watch RCU TUNE-LED bit → carrier off) and sweeps the SPE manual's full sub-band table on demand. Opt-in via the `flex:` config section.
 - **Self-contained** — single process serves both WebSocket API and web UI (no Apache/Nginx needed)
 - **Multi-client** — multiple browsers/devices can monitor the amplifier simultaneously
 - **Mixed-client broadcast** — text JSON for browsers, binary frames for RCU-capable clients, same socket
@@ -126,6 +127,16 @@ polling:
 amp:
   temperature_unit: C    # Must match the SPE setup-menu unit (C or F)
 
+# Optional — only needed if you want orchestrated TUNE + band sweep.
+# When `enabled: false` (the default), spe-remote runs exactly as before.
+# See "Orchestrated TUNE and Band Sweep" below for details.
+flex:
+  enabled: false
+  host: "192.168.1.148"   # Static LAN IP of your Flex 6000-series radio
+  port: 4992              # SmartSDR TCP control port (default)
+  slice_rx: 0             # Which slice to drive during tune cycles
+  tune_power_watts: 10    # Carrier power for ATU sweeps (5–15 W typical)
+
 logging:
   level: INFO
 ```
@@ -184,6 +195,50 @@ nohup ./run.sh &
 Navigate to `http://<your-pi-ip>:8888/` in any browser.
 
 This is the bundled dashboard. To also drive the amp from Node-RED on the same Pi or from MacExpert on your Mac, see the [How It Works](#how-it-works--one-server-many-clients) diagram above and the [Node-RED Integration](#node-red-integration) section.
+
+## Orchestrated TUNE and Band Sweep
+
+When `flex.enabled: true` is set in `config.yaml`, spe-remote opens a second connection — TCP to a **FlexRadio 6000-series** rig over the SmartSDR API — and exposes three additional WebSocket commands that any client (MacExpert, browser dashboard, Node-RED) can call:
+
+| WS command | What it does |
+|---|---|
+| `tune_single` | Run one ATU tune cycle on the Flex's current slice freq. Sends SPE TUNE keycode, waits for the front-panel TUNE LED to come on (RCU byte 4 bit 6), tells the Flex to emit a 10 W carrier, waits for the LED to go off (ATU done), cuts the carrier. No blind timing. |
+| `tune_band:<band>` | Sweep the SPE manual's recommended in-band sub-band centers for `<band>` (`160m`, `80m`, `60m`, …, `6m`). Saves the operator's pre-sweep VFO freq + mode, hits each sub-band in turn, restores the VFO at the end. |
+| `tune_stop` | Abort an in-progress single tune or sweep. The carrier-off command runs in a `finally` block — a stopped cycle always drops the carrier before exiting. |
+
+Phase progress streams back to every connected client as JSON broadcasts on the same WS:
+
+```json
+{"tune_event": "SWEEP_STARTED", "tune_message": "20m: 7 sub-bands (14.025–14.325 MHz)", "ts": 1781867...}
+{"tune_event": "VFO_SAVED",     "tune_message": "slice 0: 7.007200 MHz LSB"}
+{"tune_event": "SWEEP_STEP",    "tune_message": "1/7: 14.0250 MHz"}
+{"tune_event": "STARTED",       "tune_message": "freq=14.025"}
+{"tune_event": "LED_ON",        "tune_message": ""}
+{"tune_event": "CARRIER_ON",    "tune_message": "Flex 10W"}
+{"tune_event": "LED_OFF",       "tune_message": "ATU done"}
+{"tune_event": "CARRIER_OFF",   "tune_message": ""}
+{"tune_event": "SUCCESS",       "tune_message": "cycle complete"}
+... (next sub-band)
+{"tune_event": "SWEEP_DONE",    "tune_message": "7/7 sub-bands tuned on 20m"}
+{"tune_event": "VFO_RESTORED",  "tune_message": "slice 0: 7.007200 MHz LSB"}
+```
+
+MacExpert renders these as a Sweep panel with a band picker, progress bar, and Stop button.
+
+### Band table
+
+The sub-band centers come from the SPE 1.5K-FA User Manual rev 3.2, Section 19 — 154 entries across 11 bands. spe-remote filters to in-amateur-band only by default (`HAM_BAND_EDGES` in `spe/spe_band_table.py`) so a sweep doesn't hit out-of-band freqs the rig refuses to TX. 60m has a special override because the manual's list predates the WRC-15 amateur 60m allocation; it sweeps the single freq at 5.357 MHz instead.
+
+### Diagnostic / experimental tools
+
+- `python3 -m spe.flex_cli --allow-tx` — interactive SmartSDR command-line driver. Defaults to read-only (`slice list`, `transmit info`); `--allow-tx` unlocks anything that could key the rig. Tail subscribed events with `--watch`.
+- `python3 -m spe.flex_carrier_test` — single-shot 10 W carrier test: connects, sets freq, keys for 3 s, unkeys. For verifying basic Flex connectivity without invoking the orchestrator.
+
+### Constraints
+
+- **One rig per Pi.** spe-remote talks to one Flex; multi-rig setups need separate config / Pi.
+- **Operator picks band + antenna.** Per the SPE manual's procedure: select band, choose antenna with `[ANT]`, *then* trigger the sweep. spe-remote does not change band or antenna.
+- **Ethernet interlock not used.** SmartSDR's `interlock create type=AMP` is rejected by older firmware (1.4.0.0 in our test rig); direct `transmit tune on` works fine without it. Re-evaluate when newer firmware is in play.
 
 ## SPE Serial Protocol
 
