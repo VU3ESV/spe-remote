@@ -40,13 +40,13 @@ BAND_TABLE: dict[str, List[int]] = {
         3830, 3850, 3870, 3890, 3910, 3930,
         3950, 3970, 3990, 4010, 4030,
     ],
-    # 60m — indices [53..72]
-    "60m": [
-        5013, 5038, 5063, 5088, 5113, 5138,
-        5163, 5188, 5213, 5238, 5263, 5288,
-        5313, 5338, 5363, 5388, 5413, 5438,
-        5463, 5488,
-    ],
+    # 60m — manual lists indices [53..72] across 5013-5488 kHz, but
+    # those predate the WRC-15 amateur 60m allocation (5351.5-5366.5
+    # kHz secondary) and are all out-of-band for ham use. Override to
+    # the single freq at the centre of the amateur allocation; the
+    # raw manual list stays available for non-amateur use via
+    # _RAW_60M_MANUAL below.
+    "60m": [5357],
     # 40m — indices [73..88]
     "40m": [
         6963, 6988, 7013, 7038, 7063, 7088,
@@ -84,6 +84,18 @@ BAND_TABLE: dict[str, List[int]] = {
 }
 
 
+# Raw 60m sub-band list as the SPE manual prints it — kept for any
+# future non-amateur (MARS, broadcast, experimental 5 MHz) use. Not
+# referenced by default; ``lookup("60m")`` returns the override
+# above, which is the only amateur-legal 60m freq.
+_RAW_60M_MANUAL: List[int] = [
+    5013, 5038, 5063, 5088, 5113, 5138,
+    5163, 5188, 5213, 5238, 5263, 5288,
+    5313, 5338, 5363, 5388, 5413, 5438,
+    5463, 5488,
+]
+
+
 # Amateur radio band edges (kHz). The SPE manual's BAND_TABLE includes
 # many sub-band centers OUTSIDE these — the amp's ATU doesn't care
 # about regulations and can match into MARS / broadcast / out-of-band
@@ -99,7 +111,7 @@ BAND_TABLE: dict[str, List[int]] = {
 HAM_BAND_EDGES: dict[str, tuple[int, int]] = {
     "160m": (1800, 2000),
     "80m":  (3500, 4000),
-    "60m":  (5300, 5450),
+    "60m":  (5351, 5367),  # WRC-15 60m amateur secondary allocation
     "40m":  (7000, 7300),
     "30m":  (10100, 10150),
     "20m":  (14000, 14350),
