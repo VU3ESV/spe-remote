@@ -151,6 +151,13 @@ class SerialHandler:
         # corruption signature) show up in journald without DEBUG noise.
         # Diagnostic-only; no behaviour change.
         self._prev_op_status: str = ""
+        # TUNE LED state from the latest RCU frame's byte 4 bit 6.
+        # False until at least one RCU frame has arrived; thereafter
+        # mirrors the front-panel LED with at most _RCU_TICK_INTERVAL
+        # latency. Used by the Phase-2 tune orchestrator and exposed
+        # to WS clients as the ``tune_active`` field on each state
+        # broadcast.
+        self._last_tune_active: bool = False
 
     @property
     def state(self) -> AmplifierState:
@@ -181,6 +188,19 @@ class SerialHandler:
         if self._last_rcu_at == 0.0:
             return float("inf")
         return time.monotonic() - self._last_rcu_at
+
+    @property
+    def last_tune_active(self) -> bool:
+        """True iff the most recent RCU frame had byte 4 bit 6 CLEAR,
+        meaning the front-panel TUNE LED is on. Stays False until at
+        least one frame has arrived; thereafter mirrors the LED with
+        at most ``_RCU_TICK_INTERVAL`` (currently 0.5 s) latency.
+
+        Read by the Phase-2 tune orchestrator to gate the Flex carrier
+        transitions (carrier comes on after we confirm True; we wait
+        for False before stepping to the next sweep frequency).
+        """
+        return self._last_tune_active
 
     @property
     def connected(self) -> bool:
@@ -554,6 +574,7 @@ class SerialHandler:
                 # The protocol doesn't tell us C vs F, so without this the
                 # web client would have to assume one.
                 state.temperature_unit = self.temperature_unit
+                state.tune_active = self._last_tune_active
                 # Diagnostic: log every op_status transition with the raw
                 # decoded line + parsed (op,tx). Helps tell apart:
                 #   - amp legitimately blipping to Stby (firmware quirk
@@ -605,6 +626,17 @@ class SerialHandler:
         # Stamp liveness unconditionally — even with no RCU consumer
         # subscribed, an arrived frame still proves the amp is alive.
         self._last_rcu_at = time.monotonic()
+        # Track the TUNE LED state directly from the RCU LCD frame —
+        # byte 4 bit 6 (mask 0x40). CLEAR = LED on (amp is in TUNE
+        # mode, covers both "waiting for carrier" and "ATU sweeping").
+        # SET = LED off. Identified 2026-06-19 via labelled-diff
+        # capture; see macexpert-spe docs/REVERSE_ENGINEERING.md
+        # "Hunting status flags". The Phase-2 tune orchestrator polls
+        # ``last_tune_active`` to decide when to start / stop the
+        # Flex carrier; the state JSON ``tune_active`` field
+        # surfaces it to all WS clients.
+        if len(payload) > 4:
+            self._last_tune_active = (payload[4] & 0x40) == 0
         if not self.on_rcu_frame:
             return
         try:

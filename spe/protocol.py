@@ -139,6 +139,12 @@ class AmplifierState:
     temperature_unit: str = "C"
     warnings: str = ""
     error: str = ""
+    # Front-panel TUNE LED state, decoded from byte 4 bit 6 of the
+    # most recent RCU LCD frame (see serial_handler.last_tune_active).
+    # Stamped onto every state broadcast so all WS clients see when
+    # the amp is in TUNE mode. CSV-only sources (no RCU running) leave
+    # this False — the bit lives in the RCU stream, not CSV.
+    tune_active: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
