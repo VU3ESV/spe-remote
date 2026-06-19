@@ -10,7 +10,8 @@ A modern Python 3 remote control server for **SPE Expert** HF amplifiers (1.3K-F
 - **Power On/Off** — remote power control via DTR line (on) and serial command 0x0A (off)
 - **Full SPE protocol** — all commands from the official Application Programmer's Guide Rev 1.1, plus undocumented RCU commands
 - **RCU (Remote Control Unit) mode** — live LCD display mirror streamed as binary frames; compatible with the MacExpert companion app
-- **Orchestrated TUNE + band sweep** — drives a Flex 6000-series rig over SmartSDR TCP API; runs the SM5TOG-style ATU tune flow (carrier on → watch RCU TUNE-LED bit → carrier off) and sweeps the SPE manual's full sub-band table on demand. Opt-in via the `flex:` config section.
+- **Orchestrated TUNE + band sweep** — drives a Flex 6000-series rig over SmartSDR TCP API; runs the SM5TOG-style ATU tune flow (carrier on → watch RCU TUNE-LED bit → carrier off) and sweeps the SPE manual's full sub-band table on demand. Opt-in via the `flex:` config section. Triggerable from MacExpert's SWEEP panel, the bundled web dashboard's SWEEP button, the Node-RED `/ui` SPE panel, and the Vue `/shack` SPE card — all four UIs read the same `tune_event` broadcasts.
+- **Flex auto-discovery** — leave `flex.host` empty in `config.yaml` and spe-remote listens for the SmartSDR UDP broadcast on port 4992; the radio's IP and model are picked up automatically. Static config still wins when set.
 - **Self-contained** — single process serves both WebSocket API and web UI (no Apache/Nginx needed)
 - **Multi-client** — multiple browsers/devices can monitor the amplifier simultaneously
 - **Mixed-client broadcast** — text JSON for browsers, binary frames for RCU-capable clients, same socket
@@ -223,7 +224,28 @@ Phase progress streams back to every connected client as JSON broadcasts on the 
 {"tune_event": "VFO_RESTORED",  "tune_message": "slice 0: 7.007200 MHz LSB"}
 ```
 
-MacExpert renders these as a Sweep panel with a band picker, progress bar, and Stop button.
+Four UIs render the same broadcast stream as a sweep panel:
+
+| UI | URL / app | Implementation |
+|---|---|---|
+| MacExpert app | macOS native | SwiftUI `SweepPanelView` modal — band picker, progress, Stop |
+| Bundled web dashboard | `http://<pi>:8888/` | SWEEP button next to TUNE; inline panel in the controls row |
+| Node-RED `/ui` | `http://<pi>:1880/ui` SPE tab | SWEEP button on the SPE Panel; collapsible panel below |
+| Vue `/shack` | `http://<pi>/shack` SPE card | SWEEP in the 4-button controls grid; expandable panel inside the card |
+
+All four send `tune_band:<band>` / `tune_stop` over the same WS and consume the same `tune_event` JSON, so the Pi-side orchestrator is the single source of truth.
+
+### Flex auto-discovery
+
+When `flex.host` is empty (or omitted) in `config.yaml`, spe-remote listens on UDP port 4992 for the SmartSDR discovery broadcast that every Flex 6000-series radio emits ~1 Hz. The first packet that arrives during a 5 s window provides the radio's IP, model, callsign, and nickname; spe-remote logs them and connects:
+
+```
+Flex: flex.host empty — listening for SmartSDR discovery broadcast on UDP 4992 (up to 5s)…
+Flex: discovered FLEX-6600 "6600" (VU2CPL) at 192.168.1.148
+Flex: connected (version='1.4.0.0', handle='...')
+```
+
+If you want to pin a specific radio (multi-Flex shack) or skip the 5 s discovery wait, set `flex.host` explicitly — the static value always wins.
 
 ### Band table
 
