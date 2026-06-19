@@ -1,5 +1,6 @@
 """Multi-client WebSocket handler for SPE amplifier remote control."""
 
+import json
 import logging
 import time
 from typing import Set
@@ -17,14 +18,17 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
     clients: Set["AmplifierWebSocket"] = set()
     _serial_handler = None
     _power_controller = None
+    _tune_orchestrator = None
     _last_json = ""
     _last_broadcast_time = 0.0
     _heartbeat_interval = 15.0
 
     @classmethod
-    def configure(cls, serial_handler, power_controller=None, heartbeat: float = 15.0) -> None:
+    def configure(cls, serial_handler, power_controller=None,
+                  tune_orchestrator=None, heartbeat: float = 15.0) -> None:
         cls._serial_handler = serial_handler
         cls._power_controller = power_controller
+        cls._tune_orchestrator = tune_orchestrator
         cls._heartbeat_interval = heartbeat
 
     def check_origin(self, origin) -> bool:
@@ -58,6 +62,19 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
             tornado.ioloop.IOLoop.current().spawn_callback(
                 self._handle_power, message
             )
+        elif message == "tune_single" and self._tune_orchestrator:
+            # Single-freq ATU tune cycle. Runs as a background task so
+            # the WS handler doesn't block other clients during the
+            # ~3-5 s cycle. Status updates broadcast as `tune_event`
+            # JSON messages — see _broadcast_tune_event() below.
+            import tornado.ioloop
+            tornado.ioloop.IOLoop.current().spawn_callback(
+                self._tune_orchestrator.tune_single
+            )
+        elif message == "tune_stop" and self._tune_orchestrator:
+            # Abort an in-progress cycle. The orchestrator's finally
+            # block guarantees the carrier is cut before it returns.
+            self._tune_orchestrator.stop()
         elif message.startswith("set_temp_unit:") and self._serial_handler:
             # Live temperature-unit toggle. Example payloads: "set_temp_unit:F"
             # or "set_temp_unit:C". Updates in-memory unit on the handler
@@ -120,6 +137,21 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
                 dead_clients.add(client)
 
         cls.clients -= dead_clients
+
+    @classmethod
+    def broadcast_tune_event(cls, phase: str, message: str = "") -> None:
+        """Relay a tune-orchestrator phase transition to all clients.
+
+        Emits a small JSON object {"tune_event": phase, "tune_message":
+        message, "ts": ts}. Clients latch the terminal phases SUCCESS /
+        FAIL / ABORT to know the cycle is done; intermediate phases
+        (LED_ON, CARRIER_ON, ...) drive progress UI."""
+        msg = json.dumps({
+            "tune_event": phase,
+            "tune_message": message,
+            "ts": time.time(),
+        })
+        cls.broadcast_raw(msg)
 
     @classmethod
     def broadcast_raw(cls, msg: str) -> None:

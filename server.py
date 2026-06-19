@@ -21,6 +21,8 @@ from spe.app import make_app
 from spe.serial_handler import SerialHandler
 from spe.power_control import PowerController
 from spe.websocket_handler import AmplifierWebSocket
+from spe.flex import FlexConnection
+from spe.tune_orchestrator import TuneOrchestrator
 
 
 async def presence_heartbeat_loop(
@@ -114,9 +116,33 @@ def main() -> None:
         serial_handler=serial_handler,
     )
 
+    # Optional Flex 6000 control — Phase 2 of the band-sweep work.
+    # When flex.enabled is true and flex.host is set, we connect to
+    # SmartSDR's TCP API and create a tune orchestrator that can drive
+    # an ATU tune cycle via the (SPE TUNE keycode + Flex carrier)
+    # combination. Disabled by default; spe-remote behaves exactly
+    # as before when the section is omitted from config.yaml.
+    flex_connection = None
+    tune_orchestrator = None
+    if config.flex.enabled and config.flex.host:
+        flex_connection = FlexConnection(config.flex.host, config.flex.port)
+        tune_orchestrator = TuneOrchestrator(
+            serial_handler=serial_handler,
+            flex=flex_connection,
+            config=config.flex,
+            on_status=AmplifierWebSocket.broadcast_tune_event,
+        )
+        logger.info(
+            f"Flex control enabled: host={config.flex.host}:{config.flex.port} "
+            f"slice={config.flex.slice_rx} tune_power={config.flex.tune_power_watts}W"
+        )
+    elif config.flex.enabled:
+        logger.warning("flex.enabled but flex.host is empty — Flex disabled")
+
     AmplifierWebSocket.configure(
         serial_handler=serial_handler,
         power_controller=power_controller,
+        tune_orchestrator=tune_orchestrator,
         heartbeat=config.polling.heartbeat,
     )
 
@@ -165,16 +191,46 @@ def main() -> None:
         f"(amp_alive_threshold={config.polling.amp_alive_threshold:.1f}s)"
     )
 
+    # If a Flex is configured, kick off a connect task. Failure here
+    # shouldn't take down the whole server — clients can still talk to
+    # the amp; the tune commands will surface a clear error message
+    # back through the WS instead.
+    flex_task = None
+    if flex_connection is not None:
+        async def _flex_connect():
+            try:
+                await flex_connection.connect()
+                logger.info(
+                    f"Flex: connected (version={flex_connection.radio_version!r}, "
+                    f"handle={flex_connection.client_handle!r})"
+                )
+            except Exception:
+                logger.exception(
+                    "Flex: initial connect failed; tune_single will retry "
+                    "on each command"
+                )
+        flex_task = loop.create_task(_flex_connect())
+
     try:
         tornado.ioloop.IOLoop.current().start()
     finally:
         # Ensure background tasks are cancelled if still running
-        for task in (serial_task, heartbeat_task):
+        cleanup_tasks = [serial_task, heartbeat_task]
+        if flex_task is not None:
+            cleanup_tasks.append(flex_task)
+        for task in cleanup_tasks:
             try:
                 if not task.done():
                     task.cancel()
             except Exception:
                 pass
+
+        # Close the Flex socket so we don't leak a half-open TCP session.
+        if flex_connection is not None:
+            try:
+                loop.run_until_complete(flex_connection.close())
+            except Exception:
+                logger.exception("Error while closing Flex connection")
 
         # Make a best-effort to stop serial handler and close resources
         try:
