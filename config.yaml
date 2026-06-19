@@ -8,8 +8,8 @@ server:
   host: "0.0.0.0"
 
 polling:
-  tx_interval: 0.1           #default 0.2 seconds between polls during TX/Operate
-  idle_interval: 0.4         # def 1.0 seconds between polls when idle (RX + Standby)
+  tx_interval: 0.2           # seconds between polls during TX/Operate
+  idle_interval: 1.0         # seconds between polls when idle (RX + Standby)
   heartbeat: 15              # seconds before forcing a state push even if unchanged
   presence_heartbeat: 5      # seconds between presence heartbeat msgs
                              # ({heartbeat:true, serial:'up'|'down', ts, clients}).
@@ -23,14 +23,26 @@ polling:
                              # USB-powered → link stays open even when the
                              # amp's CPU is dead). RCU is included because
                              # STANDBY slows CSV below the threshold while
-                             # RCU OFF→ON ticks every 1.5s keep frames flowing.
+                             # RCU OFF→ON ticks every 0.5 s keep frames flowing.
 
 amp:
   # Must match the unit selected on the SPE front-panel setup menu —
   # the protocol returns temperatures unit-less, so the server has to be
   # told which unit they're in. Web client uses this to render °C / °F
   # and to scale the temperature gauge.
-  temperature_unit: c    # C or F
+  temperature_unit: C    # C or F
+
+# Optional FlexRadio 6000-series control for orchestrated TUNE + band
+# sweep. Leave enabled: false to run spe-remote exactly as before.
+# When enabled, spe-remote opens a second connection (SmartSDR TCP API)
+# and exposes the tune_single / tune_band / tune_stop WS commands. See
+# README "Orchestrated TUNE and Band Sweep" for the full flow.
+flex:
+  enabled: true
+  host: "192.168.1.148"   # Static LAN IP of the Flex; leave empty ("") to auto-discover via SmartSDR UDP broadcast on port 4992
+  port: 4992              # SmartSDR TCP control port
+  slice_rx: 0             # Which slice to drive during tune cycles
+  tune_power_watts: 10    # Carrier power for ATU tunes; SPE wants 2-15 W
 
 logging:
   level: INFO            # DEBUG, INFO, WARNING, ERROR
