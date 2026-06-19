@@ -37,6 +37,7 @@ from typing import Callable, Optional
 from spe.config import FlexConfig
 from spe.flex import FlexConnection, FlexProtocolError
 from spe.serial_handler import SerialHandler
+from spe.spe_band_table import lookup as lookup_band
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +63,22 @@ _POLL_INTERVAL = 0.1
 # in one of SUCCESS, FAIL, or ABORT — those are the terminal states
 # clients can latch on to.
 PHASES = (
-    "STARTED",       # cycle accepted; preflight begins
-    "PREFLIGHT_OK",  # amp in STBY, carrier off, ready to send TUNE
-    "FREQ_SET",      # Flex slice tuned to target freq (only if override)
-    "TUNE_SENT",     # SPE TUNE keycode written
-    "LED_ON",        # SPE confirmed TUNE entry (byte 4 bit 6 CLEAR)
-    "CARRIER_ON",    # Flex tune carrier on; ATU should now sweep
-    "LED_OFF",       # SPE LED off — ATU done (or aborted internally)
-    "CARRIER_OFF",   # Flex carrier stopped
-    "SUCCESS",       # terminal: cycle completed cleanly
-    "FAIL",          # terminal: error during the cycle (message has why)
-    "ABORT",         # terminal: external stop() while running
+    "STARTED",         # cycle accepted; preflight begins
+    "PREFLIGHT_OK",    # amp in STBY, carrier off, ready to send TUNE
+    "FREQ_SET",        # Flex slice tuned to target freq (only if override)
+    "TUNE_SENT",       # SPE TUNE keycode written
+    "LED_ON",          # SPE confirmed TUNE entry (byte 4 bit 6 CLEAR)
+    "CARRIER_ON",      # Flex tune carrier on; ATU should now sweep
+    "LED_OFF",         # SPE LED off — ATU done (or aborted internally)
+    "CARRIER_OFF",     # Flex carrier stopped
+    "SUCCESS",         # terminal: single cycle completed cleanly
+    "FAIL",            # terminal: error during the cycle (message has why)
+    "ABORT",           # terminal: external stop() while running
+    # Band-sweep phases — emitted in addition to the per-cycle phases
+    # above when tune_band() is running.
+    "SWEEP_STARTED",   # band sweep accepted; first sub-band about to start
+    "SWEEP_STEP",      # next sub-band's tune cycle is about to begin
+    "SWEEP_DONE",      # terminal: all sub-bands tuned cleanly
 )
 
 
@@ -127,6 +133,79 @@ class TuneOrchestrator:
 
         self._running = True
         self._stop_requested.clear()
+        try:
+            return await self._run_one_cycle(freq_mhz)
+        finally:
+            self._running = False
+
+    async def tune_band(self, band: str) -> bool:
+        """Sweep the SPE manual's recommended sub-band central frequencies
+        for ``band`` (e.g. "20m", "40m"). For each sub-band, sets the
+        Flex slice freq + runs a full tune cycle. The operator is
+        responsible for picking the band and antenna *before* calling
+        — spe-remote does not change either.
+
+        Returns True on SUCCESS (every sub-band cycle succeeded). False
+        if any sub-band failed or the sweep was stopped — the per-cycle
+        failure phase tells the client which sub-band gave up.
+        """
+        if self._running:
+            self._status("FAIL", "Tune already in progress")
+            return False
+
+        try:
+            centers_khz = lookup_band(band)
+        except KeyError as e:
+            self._status("FAIL", str(e))
+            return False
+
+        self._running = True
+        self._stop_requested.clear()
+        try:
+            total = len(centers_khz)
+            self._status("SWEEP_STARTED",
+                         f"{band}: {total} sub-bands "
+                         f"({centers_khz[0]/1000:.3f}–{centers_khz[-1]/1000:.3f} MHz)")
+
+            completed = 0
+            for i, center_khz in enumerate(centers_khz, start=1):
+                if self._stop_requested.is_set():
+                    self._status("ABORT",
+                                 f"stopped at sub-band {i}/{total}")
+                    return False
+
+                freq_mhz = center_khz / 1000.0
+                self._status("SWEEP_STEP",
+                             f"{i}/{total}: {freq_mhz:.4f} MHz")
+
+                ok = await self._run_one_cycle(freq_mhz)
+                if not ok:
+                    # _run_one_cycle has already emitted FAIL with the
+                    # specific reason — surface a sweep-level summary
+                    # so clients can latch on it.
+                    self._status("FAIL",
+                                 f"sub-band {i}/{total} failed at "
+                                 f"{freq_mhz:.4f} MHz; sweep aborted")
+                    return False
+
+                completed += 1
+                # Brief pause between cycles — SM5TOG's PAUSE_STEP.
+                # Long enough for ATU relays to settle and serial
+                # buffer to drain before the next freq command.
+                await asyncio.sleep(1.0)
+
+            self._status("SWEEP_DONE",
+                         f"{completed}/{total} sub-bands tuned on {band}")
+            return True
+
+        finally:
+            self._running = False
+
+    async def _run_one_cycle(self, freq_mhz: Optional[float]) -> bool:
+        """Single ATU tune cycle. Used by both tune_single (one call)
+        and tune_band (called N times in a loop). Caller is responsible
+        for setting / clearing self._running around this method.
+        """
         carrier_on = False
         success = False
 
@@ -222,7 +301,6 @@ class TuneOrchestrator:
 
             self._status("SUCCESS" if success else "FAIL",
                          "cycle complete" if success else "see prior status")
-            self._running = False
 
     async def _wait_for_tune_active(self, expected: bool, timeout: float) -> bool:
         """Poll ``serial.last_tune_active`` until it equals ``expected``

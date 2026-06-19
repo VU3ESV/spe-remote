@@ -82,9 +82,21 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
             tornado.ioloop.IOLoop.current().spawn_callback(
                 self._tune_orchestrator.tune_single
             )
+        elif message.startswith("tune_band:") and self._tune_orchestrator:
+            # Sweep the SPE manual's recommended sub-bands for one
+            # band. Operator picks band + antenna ahead of time; we
+            # just tune at each freq the manual lists. Payload format:
+            # tune_band:20m   (case-insensitive band name).
+            band = message.split(":", 1)[1].strip()
+            import tornado.ioloop
+            tornado.ioloop.IOLoop.current().spawn_callback(
+                self._tune_orchestrator.tune_band, band
+            )
         elif message == "tune_stop" and self._tune_orchestrator:
-            # Abort an in-progress cycle. The orchestrator's finally
-            # block guarantees the carrier is cut before it returns.
+            # Abort an in-progress cycle (single or sweep). The
+            # orchestrator's finally block guarantees the carrier is
+            # cut before it returns. Sweep checks the stop event
+            # before each sub-band so abort lands quickly.
             self._tune_orchestrator.stop()
         elif message.startswith("set_temp_unit:") and self._serial_handler:
             # Live temperature-unit toggle. Example payloads: "set_temp_unit:F"
