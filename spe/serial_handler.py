@@ -106,6 +106,29 @@ class SerialHandler:
 
         self._buffer = bytearray()
         self._last_byte_at: float = 0.0
+        # Optional raw-byte capture for protocol investigation. When
+        # serial.debug_raw_log is set in config.yaml, every chunk the
+        # reader receives is appended as "<monotonic> <hex>\n" before
+        # framing is attempted, so we can see frame types the parser
+        # drops (anything that isn't CSV CNT=0x43 or RCU type=0x6A).
+        # Off by default — production should never run with it enabled.
+        self._raw_log_file = None
+        raw_path = getattr(serial_config, "debug_raw_log", "") or ""
+        if raw_path:
+            try:
+                # Buffered text mode; flush after each write so a SIGTERM
+                # mid-capture still keeps everything to that point.
+                self._raw_log_file = open(raw_path, "a", buffering=1)
+                self._raw_log_file.write(
+                    f"# spe-remote raw capture begin {time.monotonic():.3f}\n"
+                )
+                logger.warning(
+                    f"DEBUG RAW LOG ON: every received byte → {raw_path}. "
+                    "Disable in production (file grows unbounded)."
+                )
+            except OSError as e:
+                logger.error(f"Could not open debug_raw_log={raw_path!r}: {e}")
+                self._raw_log_file = None
         # Monotonic timestamp of the most recently parsed CSV state frame.
         # 0.0 means "no frame yet seen this session." Used to detect the
         # amp going dark even though the FTDI port is still open (e.g.
@@ -377,6 +400,21 @@ class SerialHandler:
     def _ingest_chunk(self, chunk: bytes) -> None:
         if not chunk:
             return
+        if self._raw_log_file is not None:
+            # One line per chunk, monotonic seconds (5 dp = 10 µs) so we
+            # can align with parse-side events later. Hex with no spaces
+            # for compactness — analysis tools can split on byte width.
+            try:
+                self._raw_log_file.write(
+                    f"{time.monotonic():.5f} {chunk.hex()}\n"
+                )
+            except OSError as e:
+                logger.error(f"raw log write failed (disabling): {e}")
+                try:
+                    self._raw_log_file.close()
+                except Exception:
+                    pass
+                self._raw_log_file = None
         self._buffer.extend(chunk)
         self._last_byte_at = time.monotonic()
         if len(self._buffer) > _MAX_BUFFER:

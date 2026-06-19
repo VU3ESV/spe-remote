@@ -12,6 +12,13 @@ class SerialConfig:
     port: str = "/dev/ttyUSB0"
     baudrate: int = 115200
     timeout: float = 1.0
+    # Optional path to a debug raw-byte log. When set, every chunk of
+    # bytes the amp sends gets appended verbatim with a monotonic
+    # timestamp so we can see frame types the parser drops (anything
+    # that's not CSV CNT=0x43 or RCU type=0x6A). Off by default —
+    # production should not run with this on; it grows unbounded.
+    # Investigation-only.
+    debug_raw_log: str = ""
 
 
 @dataclass
