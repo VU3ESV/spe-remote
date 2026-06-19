@@ -48,7 +48,7 @@ class FlexConfig:
     behaving exactly as before.
     """
     enabled: bool = False
-    host: str = ""              # Static LAN IP of the Flex (e.g. 192.168.1.148)
+    host: str = ""              # Static LAN IP of the Flex; leave empty to auto-discover via SmartSDR UDP multicast (port 4992)
     port: int = 4992            # SmartSDR TCP control port
     slice_rx: int = 0           # Which slice to drive during tune cycles
     tune_power_watts: int = 10  # Carrier power for ATU tunes; SPE wants 2-15W

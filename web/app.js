@@ -29,7 +29,11 @@
         const d = JSON.parse(evt.data);
         if (d.power_result) {
           handlePowerResult(d);
-        } else {
+        } else if (d.tune_event) {
+          handleTuneEvent(d);
+        } else if (d.heartbeat) {
+          // presence heartbeat — no UI surface yet
+        } else if (d.op_status) {
           updateUI(d);
         }
       } catch (e) {
@@ -330,6 +334,135 @@
     ctx.fillStyle = "#e0e0e0";
     ctx.fill();
   }
+
+  // ─────────────────────────────────────────────────────────────
+  //  ATU band sweep — panel state + tune_event handling
+  // ─────────────────────────────────────────────────────────────
+  //
+  // Sends `tune_band:<band>` and `tune_stop` over WS; reacts to the
+  // server's `tune_event` JSON broadcasts to drive the panel UI.
+  // Phases the server emits (see spe/tune_orchestrator.py PHASES):
+  //   STARTED PREFLIGHT_OK VFO_SAVED FREQ_SET TUNE_SENT LED_ON
+  //   CARRIER_ON LED_OFF CARRIER_OFF VFO_RESTORED SUCCESS FAIL ABORT
+  //   SWEEP_STARTED SWEEP_STEP SWEEP_DONE
+  //
+  // Terminal phases that release the Start button: SUCCESS FAIL
+  // ABORT SWEEP_DONE.
+
+  const SWEEP_BANDS = ["160m", "80m", "60m", "40m", "30m",
+                       "20m", "17m", "15m", "12m", "10m", "6m"];
+  let selectedBand = "20m";
+  let isSweeping = false;
+
+  function renderBandButtons() {
+    const wrap = document.getElementById("sweepBands");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    SWEEP_BANDS.forEach((band) => {
+      const b = document.createElement("button");
+      b.textContent = band;
+      b.dataset.band = band;
+      if (band === selectedBand) b.classList.add("selected");
+      b.onclick = () => {
+        if (isSweeping) return;
+        selectedBand = band;
+        wrap.querySelectorAll("button").forEach((x) =>
+          x.classList.toggle("selected", x.dataset.band === band)
+        );
+        document.getElementById("btnSweepStart").disabled = !ws ||
+          ws.readyState !== WebSocket.OPEN;
+      };
+      wrap.appendChild(b);
+    });
+    document.getElementById("btnSweepStart").disabled = !ws ||
+      ws.readyState !== WebSocket.OPEN;
+  }
+
+  window.toggleSweepPanel = function () {
+    const panel = document.getElementById("sweepPanel");
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) renderBandButtons();
+  };
+
+  window.startSelectedSweep = function () {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (isSweeping) return;
+    if (!confirm(
+      `Start ATU sweep on ${selectedBand}? ` +
+      `Amp must be in STBY and the antenna for ${selectedBand} selected.`
+    )) return;
+    isSweeping = true;
+    setSweepUI({ phase: "STARTED", message: `${selectedBand} requested` });
+    ws.send(`tune_band:${selectedBand}`);
+  };
+
+  function setSweepUI(state) {
+    const wrap = document.getElementById("sweepStatus");
+    const phaseEl = document.getElementById("sweepPhase");
+    const msgEl = document.getElementById("sweepMessage");
+    const startBtn = document.getElementById("btnSweepStart");
+    const stopBtn = document.getElementById("btnSweepStop");
+    if (!wrap) return;
+
+    const phase = state.phase || "";
+    phaseEl.textContent = phase.replace(/_/g, " ") || "Ready";
+    msgEl.textContent = state.message || "";
+
+    const terminal = ["SUCCESS", "FAIL", "ABORT", "SWEEP_DONE"]
+      .includes(phase);
+    const failure = phase === "FAIL" || phase === "ABORT";
+    const success = phase === "SUCCESS" || phase === "SWEEP_DONE";
+
+    wrap.classList.remove("running", "success", "fail");
+    if (terminal) {
+      if (failure) wrap.classList.add("fail");
+      else if (success) wrap.classList.add("success");
+      isSweeping = false;
+    } else if (phase) {
+      wrap.classList.add("running");
+    }
+
+    startBtn.disabled = isSweeping || !ws || ws.readyState !== WebSocket.OPEN;
+    stopBtn.disabled = !isSweeping;
+
+    // Disable band buttons while running
+    document.querySelectorAll("#sweepBands button").forEach((b) => {
+      b.disabled = isSweeping;
+    });
+  }
+
+  function handleTuneEvent(d) {
+    const phase = d.tune_event;
+    const message = d.tune_message || "";
+
+    if (phase === "STARTED" || phase === "SWEEP_STARTED") {
+      isSweeping = true;
+    }
+
+    setSweepUI({ phase, message });
+
+    // Progress bar from SWEEP_STEP "N/M: freq MHz" messages
+    if (phase === "SWEEP_STEP") {
+      const m = message.match(/^(\d+)\s*\/\s*(\d+)/);
+      if (m) {
+        const pct = (parseInt(m[1], 10) - 1) / parseInt(m[2], 10) * 100;
+        const wrap = document.getElementById("sweepProgressWrap");
+        const bar = document.getElementById("sweepProgressBar");
+        if (wrap && bar) {
+          wrap.hidden = false;
+          bar.style.width = pct + "%";
+        }
+      }
+    } else if (phase === "SWEEP_DONE") {
+      const bar = document.getElementById("sweepProgressBar");
+      if (bar) bar.style.width = "100%";
+    }
+  }
+
+  // Render band buttons once on first page load so reopening the
+  // panel is instant.
+  document.addEventListener("DOMContentLoaded", renderBandButtons);
 
   // --- Init ---
   connect();

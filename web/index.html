@@ -84,6 +84,33 @@
     <button class="btn" id="btnGain" onclick="sendCmd('power_level')">POWER</button>
     <button class="btn" onclick="sendCmd('band_dn')">BAND &minus;</button>
     <button class="btn" onclick="sendCmd('band_up')">BAND +</button>
+    <button class="btn" id="btnSweep" onclick="toggleSweepPanel()">SWEEP</button>
+  </div>
+
+  <!-- ATU band-sweep panel (orchestrated via spe-remote tune_band).
+       Hidden by default; toggled by the SWEEP button above. -->
+  <div class="sweep-panel" id="sweepPanel" hidden>
+    <div class="sweep-header">
+      <span>ATU Band Sweep</span>
+      <button class="sweep-close" onclick="toggleSweepPanel()" aria-label="Close">&times;</button>
+    </div>
+    <div class="sweep-bands" id="sweepBands">
+      <!-- Filled by app.js — one button per band -->
+    </div>
+    <div class="sweep-status" id="sweepStatus">
+      <span id="sweepPhase">Ready</span>
+      <span id="sweepMessage"></span>
+    </div>
+    <div class="sweep-progress" id="sweepProgressWrap" hidden>
+      <div class="sweep-progress-bar" id="sweepProgressBar"></div>
+    </div>
+    <div class="sweep-controls">
+      <button class="btn sweep-start" id="btnSweepStart" onclick="startSelectedSweep()" disabled>Start Sweep</button>
+      <button class="btn sweep-stop" id="btnSweepStop" onclick="sendCmd('tune_stop')" disabled>Stop</button>
+    </div>
+    <div class="sweep-note">
+      The amp must be in <strong>STBY</strong> and the correct antenna for the band selected before starting. Operator picks band + antenna; spe-remote sweeps the freqs the SPE manual lists for that band.
+    </div>
   </div>
 
   <!-- Alert bar -->

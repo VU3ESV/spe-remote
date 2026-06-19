@@ -21,7 +21,7 @@ from spe.app import make_app
 from spe.serial_handler import SerialHandler
 from spe.power_control import PowerController
 from spe.websocket_handler import AmplifierWebSocket
-from spe.flex import FlexConnection
+from spe.flex import FlexConnection, discover as flex_discover
 from spe.tune_orchestrator import TuneOrchestrator
 
 
@@ -117,27 +117,58 @@ def main() -> None:
     )
 
     # Optional Flex 6000 control — Phase 2 of the band-sweep work.
-    # When flex.enabled is true and flex.host is set, we connect to
-    # SmartSDR's TCP API and create a tune orchestrator that can drive
-    # an ATU tune cycle via the (SPE TUNE keycode + Flex carrier)
-    # combination. Disabled by default; spe-remote behaves exactly
-    # as before when the section is omitted from config.yaml.
+    # When flex.enabled is true, connect to SmartSDR's TCP API and
+    # create a tune orchestrator that can drive an ATU tune cycle via
+    # the (SPE TUNE keycode + Flex carrier) combination. flex.host
+    # picks the radio: set explicitly to an IP, or leave empty to
+    # auto-discover via the SmartSDR UDP broadcast on port 4992.
+    # Disabled by default; spe-remote behaves exactly as before when
+    # the section is omitted from config.yaml.
     flex_connection = None
     tune_orchestrator = None
-    if config.flex.enabled and config.flex.host:
-        flex_connection = FlexConnection(config.flex.host, config.flex.port)
-        tune_orchestrator = TuneOrchestrator(
-            serial_handler=serial_handler,
-            flex=flex_connection,
-            config=config.flex,
-            on_status=AmplifierWebSocket.broadcast_tune_event,
-        )
-        logger.info(
-            f"Flex control enabled: host={config.flex.host}:{config.flex.port} "
-            f"slice={config.flex.slice_rx} tune_power={config.flex.tune_power_watts}W"
-        )
-    elif config.flex.enabled:
-        logger.warning("flex.enabled but flex.host is empty — Flex disabled")
+    if config.flex.enabled:
+        flex_host = config.flex.host
+        if not flex_host:
+            logger.info(
+                "Flex: flex.host empty — listening for SmartSDR discovery "
+                "broadcast on UDP 4992 (up to 5s)…"
+            )
+            # Run discovery synchronously here; spe-remote startup blocks
+            # on it for a few seconds at most. Doing this on the main
+            # loop is fine because nothing else is running yet — the
+            # serial reader / tornado IOLoop haven't started.
+            try:
+                discovery = asyncio.get_event_loop().run_until_complete(
+                    flex_discover()
+                )
+            except Exception:
+                logger.exception("Flex discovery raised; skipping")
+                discovery = None
+            if discovery and discovery.get("ip"):
+                flex_host = discovery["ip"]
+                logger.info(
+                    f"Flex: discovered {discovery.get('model','?')} "
+                    f"\"{discovery.get('nickname','?')}\" "
+                    f"({discovery.get('callsign','?')}) at {flex_host}"
+                )
+            else:
+                logger.warning(
+                    "Flex: discovery timed out and flex.host is empty — "
+                    "Flex disabled for this session"
+                )
+        if flex_host:
+            flex_connection = FlexConnection(flex_host, config.flex.port)
+            tune_orchestrator = TuneOrchestrator(
+                serial_handler=serial_handler,
+                flex=flex_connection,
+                config=config.flex,
+                on_status=AmplifierWebSocket.broadcast_tune_event,
+            )
+            logger.info(
+                f"Flex control enabled: host={flex_host}:{config.flex.port} "
+                f"slice={config.flex.slice_rx} "
+                f"tune_power={config.flex.tune_power_watts}W"
+            )
 
     AmplifierWebSocket.configure(
         serial_handler=serial_handler,

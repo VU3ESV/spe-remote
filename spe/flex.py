@@ -2,8 +2,11 @@
 
 Phase 1 of the spe-remote band-sweep work: a minimal async TCP client
 that can drive a Flex 6000 hard enough to run the SM5TOG-style ATU
-tune flow (set freq, set mode, key the built-in tune carrier). No
-discovery — the radio's IP is configured statically in spe.config.
+tune flow (set freq, set mode, key the built-in tune carrier).
+``discover()`` (added 2026-06-19) listens for the radio's UDP
+broadcast on port 4992 and pulls the IP from it, so the operator can
+leave ``flex.host`` empty in config.yaml and have spe-remote find
+the rig on its own. Static config still wins when set.
 
 Protocol summary (from
 https://github.com/flexradio/smartsdr-api-docs/wiki/SmartSDR-TCPIP-API):
@@ -29,6 +32,14 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 FLEX_TCP_PORT = 4992
+
+# SmartSDR uses UDP port 4992 for radio discovery. Flex 6000-series
+# radios broadcast a text packet roughly once per second from their
+# LAN IP; `discover()` listens for one and pulls the IP from the
+# `ip=<a.b.c.d>` field. Used as a fallback when `flex.host` is empty
+# in the config.
+FLEX_DISCOVERY_PORT = 4992
+_DISCOVERY_TIMEOUT = 5.0  # seconds — radio broadcasts ~1Hz so 5s is plenty
 
 # How long to wait for a command reply before giving up and surfacing
 # an error. SmartSDR replies are typically tens of milliseconds, so 5 s
@@ -349,3 +360,73 @@ class FlexConnection:
         """Read-only: return the slice list as the radio reports it.
         Useful for confirming connectivity without keying anything."""
         return await self.send("slice list")
+
+
+# ──────────────────────────────────────────────────────────────────
+# UDP discovery
+# ──────────────────────────────────────────────────────────────────
+
+async def discover(timeout: float = _DISCOVERY_TIMEOUT) -> Optional[dict]:
+    """Listen for one SmartSDR discovery broadcast and return its
+    parsed fields, or None on timeout.
+
+    The Flex 6000-series radios broadcast a UDP packet to
+    255.255.255.255:4992 roughly once per second containing
+    space-separated `key=value` pairs. Typical fields include:
+    ``discovery`` (literal marker), ``model``, ``serial``, ``version``,
+    ``nickname``, ``callsign``, ``ip``, ``port``, ``status``.
+
+    Returns a dict with at minimum ``ip`` and ``port`` populated, plus
+    any other fields the radio chose to broadcast (used downstream
+    for logging which radio we found — nickname, callsign, etc.).
+    Returns None if no packet arrives within ``timeout``.
+
+    Pi-side usage: server.py falls back to this when ``flex.host`` is
+    empty. Multi-Flex networks deliberately not handled here — we
+    take the first packet that arrives, which is fine when one radio
+    is on the shack LAN; configurable matching can come later.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        # 0.0.0.0 catches both broadcast and (most) multicast frames
+        # the radio emits without needing IGMP-join gymnastics on the
+        # Pi side. Doesn't conflict with a TCP listener on the same
+        # port (different socket type).
+        sock.bind(("0.0.0.0", FLEX_DISCOVERY_PORT))
+    except OSError as e:
+        logger.error(f"Flex discovery bind failed on UDP {FLEX_DISCOVERY_PORT}: {e}")
+        sock.close()
+        return None
+
+    loop = asyncio.get_event_loop()
+
+    def _recv_once() -> Optional[bytes]:
+        try:
+            data, _addr = sock.recvfrom(2048)
+            return data
+        except OSError:
+            return None
+
+    try:
+        sock.settimeout(timeout)
+        data = await loop.run_in_executor(None, _recv_once)
+    finally:
+        sock.close()
+
+    if not data:
+        return None
+
+    text = data.decode("ascii", errors="replace").strip()
+    fields: dict[str, str] = {}
+    for token in text.split():
+        if "=" in token:
+            k, v = token.split("=", 1)
+            fields[k] = v
+    if "ip" not in fields:
+        logger.warning(f"Flex discovery packet had no ip= field: {text!r}")
+        return None
+    fields.setdefault("port", str(FLEX_TCP_PORT))
+    return fields
