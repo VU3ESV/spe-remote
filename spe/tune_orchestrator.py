@@ -37,7 +37,7 @@ from typing import Callable, Optional
 from spe.config import FlexConfig
 from spe.flex import FlexConnection, FlexProtocolError
 from spe.serial_handler import SerialHandler
-from spe.spe_band_table import lookup as lookup_band
+from spe.spe_band_table import BAND_TABLE, lookup as lookup_band
 
 logger = logging.getLogger(__name__)
 
@@ -155,17 +155,29 @@ class TuneOrchestrator:
 
         try:
             centers_khz = lookup_band(band)
+            raw_total = len(BAND_TABLE.get(band.strip().lower().rstrip("m") + "m",
+                                            BAND_TABLE.get(band.strip().lower(), [])))
         except KeyError as e:
             self._status("FAIL", str(e))
+            return False
+
+        if not centers_khz:
+            self._status("FAIL", f"{band}: no in-band sub-bands to sweep")
             return False
 
         self._running = True
         self._stop_requested.clear()
         try:
             total = len(centers_khz)
-            self._status("SWEEP_STARTED",
-                         f"{band}: {total} sub-bands "
-                         f"({centers_khz[0]/1000:.3f}–{centers_khz[-1]/1000:.3f} MHz)")
+            skipped = raw_total - total
+            note = (f" ({skipped} out-of-band entries from the manual skipped)"
+                    if skipped > 0 else "")
+            self._status(
+                "SWEEP_STARTED",
+                f"{band}: {total} sub-bands "
+                f"({centers_khz[0]/1000:.3f}–{centers_khz[-1]/1000:.3f} MHz)"
+                + note
+            )
 
             completed = 0
             for i, center_khz in enumerate(centers_khz, start=1):

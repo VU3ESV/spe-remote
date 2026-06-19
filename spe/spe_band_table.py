@@ -84,21 +84,60 @@ BAND_TABLE: dict[str, List[int]] = {
 }
 
 
-def lookup(band: str) -> List[int]:
+# Amateur radio band edges (kHz). The SPE manual's BAND_TABLE includes
+# many sub-band centers OUTSIDE these — the amp's ATU doesn't care
+# about regulations and can match into MARS / broadcast / out-of-band
+# antennas — but a TX-capable rig like the Flex 6000 refuses to key
+# outside ham bands by default. For the amateur band-sweep use case,
+# trim each band's list to in-band-only.
+#
+# Edges chosen to be the LOOSEST reasonable amateur allocation that
+# still excludes all the manual's clearly out-of-band entries — covers
+# US Extra, IARU R1, and VU privileges. Operators on tighter regional
+# allocations should know they may need to ignore some sub-band cycles
+# the sweep schedules.
+HAM_BAND_EDGES: dict[str, tuple[int, int]] = {
+    "160m": (1800, 2000),
+    "80m":  (3500, 4000),
+    "60m":  (5300, 5450),
+    "40m":  (7000, 7300),
+    "30m":  (10100, 10150),
+    "20m":  (14000, 14350),
+    "17m":  (18068, 18168),
+    "15m":  (21000, 21450),
+    "12m":  (24890, 24990),
+    "10m":  (28000, 29700),
+    "6m":   (50000, 54000),
+}
+
+
+def lookup(band: str, in_band_only: bool = True) -> List[int]:
     """Return the sub-band centers (kHz) for a band name. Case-
     insensitive. Raises KeyError if the band isn't in the table —
     callers should surface that to the user as ``FAIL`` rather than
-    swallowing it."""
+    swallowing it.
+
+    By default filters to amateur in-band freqs only (per
+    ``HAM_BAND_EDGES``) — the manual's table includes MARS / broadcast
+    / out-of-band entries that a normal ham-band-locked rig refuses to
+    TX on. Set ``in_band_only=False`` to get the raw manual list (for
+    MARS-style operation or any future need)."""
     key = band.strip().lower()
-    if key in BAND_TABLE:
-        return BAND_TABLE[key]
-    # Tolerate "20" instead of "20m" — the SPE itself uses "20m" but
-    # callers might forget the m.
-    if not key.endswith("m"):
-        key2 = key + "m"
-        if key2 in BAND_TABLE:
-            return BAND_TABLE[key2]
-    raise KeyError(f"Unknown band {band!r}; known: {sorted(BAND_TABLE)}")
+    if key not in BAND_TABLE:
+        # Tolerate "20" instead of "20m" — the SPE itself uses "20m"
+        # but callers might forget the m.
+        if not key.endswith("m") and (key + "m") in BAND_TABLE:
+            key = key + "m"
+        else:
+            raise KeyError(
+                f"Unknown band {band!r}; known: {sorted(BAND_TABLE)}"
+            )
+
+    centers = BAND_TABLE[key]
+    if in_band_only and key in HAM_BAND_EDGES:
+        low_khz, high_khz = HAM_BAND_EDGES[key]
+        centers = [f for f in centers if low_khz <= f <= high_khz]
+    return centers
 
 
 def all_bands() -> List[str]:
