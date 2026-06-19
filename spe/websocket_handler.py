@@ -49,7 +49,18 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
                 pass
 
     def on_message(self, message: str) -> None:
-        logger.info(f"Command from {self.request.remote_ip}: {message}")
+        # Strip surrounding whitespace before dispatching. Various
+        # WS clients (websocat with --read-mode=lines, browser
+        # dashboards, Node-RED) sometimes include a trailing \n or
+        # \r\n which would otherwise break an exact-string compare
+        # below. Log the raw message (repr) at INFO so we can see
+        # exactly what arrived if dispatching ever gets weird.
+        raw = message
+        message = message.strip()
+        logger.info(
+            f"Command from {self.request.remote_ip}: {message!r}"
+            + (f" (raw={raw!r})" if raw != message else "")
+        )
         if message == "power_on" and self._power_controller:
             # Power ON requires DTR hardware toggle (no serial command exists)
             import tornado.ioloop
