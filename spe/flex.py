@@ -88,6 +88,14 @@ class FlexConnection:
         # Set after connect() if you want streamed updates.
         self.on_status: Optional[Callable[[str, str], None]] = None
 
+        # Live cache of per-slice state, populated from subscribed
+        # `slice N k=v k=v …` events. Keys are slice index ints;
+        # values are dicts of the latest fields the radio has emitted
+        # (most importantly RF_frequency in MHz as a string, and mode
+        # as a string like "CWU" / "USB"). Useful for save / restore
+        # around tune cycles. Empty until the first sub event arrives.
+        self.slice_state: dict[int, dict[str, str]] = {}
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -119,6 +127,16 @@ class FlexConnection:
             f"Flex: connected (version={self.radio_version!r}, "
             f"handle={self.client_handle!r})"
         )
+
+        # Subscribe to slice events so slice_state populates
+        # automatically. Tolerate failure here — slice_state stays
+        # empty in that case, and any consumer (e.g. the orchestrator's
+        # save/restore) will fall back gracefully.
+        try:
+            await self.send("sub slice all")
+        except (FlexProtocolError, asyncio.TimeoutError, ConnectionError):
+            logger.warning("Flex: could not subscribe to slice events; "
+                           "slice_state will stay empty")
 
     async def close(self) -> None:
         """Shut down the connection. Idempotent."""
@@ -247,6 +265,10 @@ class FlexConnection:
             parts = line[1:].split("|", 1)
             handle = parts[0]
             message = parts[1] if len(parts) > 1 else ""
+            # Update slice_state cache first so any save/restore
+            # consumer sees fresh values even if it's reading on the
+            # same callback tick as the event arrives.
+            self._update_slice_cache(message)
             if self.on_status is not None:
                 try:
                     self.on_status(handle, message)
@@ -256,6 +278,31 @@ class FlexConnection:
         # V / H banner lines after the initial banner are unusual but
         # not destructive — log at debug.
         logger.debug(f"Flex: unhandled line: {line!r}")
+
+    def _update_slice_cache(self, message: str) -> None:
+        """If ``message`` is a ``slice <N> <key=value> …`` event, merge
+        the keys into self.slice_state[N]. Silently ignores anything
+        else (radio / interlock / eq events). Keeps the cache as the
+        most recent value for each key — partial slice events (radio
+        only emits the fields that changed) are merged, never replaced
+        wholesale."""
+        if not message.startswith("slice "):
+            return
+        rest = message[6:].split(maxsplit=1)
+        if len(rest) < 2:
+            return
+        try:
+            slice_n = int(rest[0])
+        except ValueError:
+            return
+        state = self.slice_state.setdefault(slice_n, {})
+        # Parse simple space-separated key=value tokens. Values do not
+        # contain spaces in the wire format (the radio quotes anything
+        # containing spaces with an underscore at the protocol layer).
+        for token in rest[1].split():
+            if "=" in token:
+                k, v = token.split("=", 1)
+                state[k] = v
 
     # ------------------------------------------------------------------
     # High-level convenience methods

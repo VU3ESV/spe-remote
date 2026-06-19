@@ -65,12 +65,14 @@ _POLL_INTERVAL = 0.1
 PHASES = (
     "STARTED",         # cycle accepted; preflight begins
     "PREFLIGHT_OK",    # amp in STBY, carrier off, ready to send TUNE
+    "VFO_SAVED",       # operator's freq+mode snapshotted before any change
     "FREQ_SET",        # Flex slice tuned to target freq (only if override)
     "TUNE_SENT",       # SPE TUNE keycode written
     "LED_ON",          # SPE confirmed TUNE entry (byte 4 bit 6 CLEAR)
     "CARRIER_ON",      # Flex tune carrier on; ATU should now sweep
     "LED_OFF",         # SPE LED off — ATU done (or aborted internally)
     "CARRIER_OFF",     # Flex carrier stopped
+    "VFO_RESTORED",    # operator's saved freq+mode written back
     "SUCCESS",         # terminal: single cycle completed cleanly
     "FAIL",            # terminal: error during the cycle (message has why)
     "ABORT",           # terminal: external stop() while running
@@ -122,10 +124,11 @@ class TuneOrchestrator:
     async def tune_single(self, freq_mhz: Optional[float] = None) -> bool:
         """Run a single tune cycle. Returns True on SUCCESS, else False.
 
-        ``freq_mhz`` overrides the Flex slice frequency before keying.
-        Omit to tune at whatever freq the slice is already on (typical
-        operator flow: dial to band edge, press TUNE in the app, then
-        QSY back).
+        ``freq_mhz`` overrides the Flex slice frequency before keying;
+        the operator's pre-call freq + mode are snapshotted and
+        restored after the cycle. Omit ``freq_mhz`` to tune at whatever
+        freq the slice is already on (no save/restore needed in that
+        case — the slice didn't move).
         """
         if self._running:
             self._status("FAIL", "Tune already in progress")
@@ -133,9 +136,12 @@ class TuneOrchestrator:
 
         self._running = True
         self._stop_requested.clear()
+        snap = self._snapshot_slice() if freq_mhz is not None else None
         try:
             return await self._run_one_cycle(freq_mhz)
         finally:
+            if snap is not None:
+                await self._restore_slice(snap)
             self._running = False
 
     async def tune_band(self, band: str) -> bool:
@@ -167,6 +173,7 @@ class TuneOrchestrator:
 
         self._running = True
         self._stop_requested.clear()
+        snap = self._snapshot_slice()
         try:
             total = len(centers_khz)
             skipped = raw_total - total
@@ -211,6 +218,10 @@ class TuneOrchestrator:
             return True
 
         finally:
+            # Restore the operator's pre-sweep VFO + mode before we
+            # release _running. Best effort — log on failure but don't
+            # mask whatever terminal phase the sweep produced.
+            await self._restore_slice(snap)
             self._running = False
 
     async def _run_one_cycle(self, freq_mhz: Optional[float]) -> bool:
@@ -313,6 +324,50 @@ class TuneOrchestrator:
 
             self._status("SUCCESS" if success else "FAIL",
                          "cycle complete" if success else "see prior status")
+
+    def _snapshot_slice(self) -> Optional[dict]:
+        """Read the current freq+mode of the operator's slice from
+        FlexConnection.slice_state. Returns a small dict the
+        orchestrator can hand to ``_restore_slice`` later, or None if
+        the cache isn't populated yet (e.g. the radio hasn't emitted a
+        slice event since spe-remote connected). Emits ``VFO_SAVED`` on
+        success."""
+        rx = self.config.slice_rx
+        state = self.flex.slice_state.get(rx)
+        if not state:
+            self._status("VFO_SAVED",
+                         f"slice {rx} state unknown — restore disabled")
+            return None
+        freq = state.get("RF_frequency")
+        mode = state.get("mode")
+        if freq is None and mode is None:
+            self._status("VFO_SAVED",
+                         f"slice {rx} state empty — restore disabled")
+            return None
+        self._status("VFO_SAVED",
+                     f"slice {rx}: {freq} MHz {mode}")
+        return {"rx": rx, "freq": freq, "mode": mode}
+
+    async def _restore_slice(self, snap: Optional[dict]) -> None:
+        """Write the saved freq+mode back to the Flex slice. Best
+        effort — any failure logs at WARN and a FAIL status is emitted,
+        but we never re-raise (the cycle that called us already has
+        its own terminal phase queued)."""
+        if snap is None:
+            return
+        rx = snap["rx"]
+        freq = snap["freq"]
+        mode = snap["mode"]
+        try:
+            if freq is not None:
+                await self.flex.set_slice_freq(rx, float(freq))
+            if mode is not None:
+                await self.flex.set_slice_mode(rx, mode)
+            self._status("VFO_RESTORED",
+                         f"slice {rx}: {freq} MHz {mode}")
+        except Exception as e:
+            logger.exception("Failed to restore slice freq+mode")
+            self._status("FAIL", f"VFO restore: {e}")
 
     async def _wait_for_tune_active(self, expected: bool, timeout: float) -> bool:
         """Poll ``serial.last_tune_active`` until it equals ``expected``
