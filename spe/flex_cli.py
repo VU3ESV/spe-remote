@@ -123,13 +123,18 @@ async def _main(args) -> int:
             print(f"warning: slice list failed: {e}")
 
         if args.watch:
-            # Subscribe and tail events until interrupted.
-            try:
-                await flex.subscribe("slice")
-                await flex.subscribe("transmit")
-                await flex.subscribe("radio")
-            except FlexProtocolError as e:
-                print(f"warning: subscribe failed: {e}")
+            # Subscribe and tail events until interrupted. The radio
+            # already streams `radio`, `interlock`, `eq`, and `waveform`
+            # events from connect — we explicitly sub to `slice` and
+            # `interlock` since those carry the freq/mode/TX state we
+            # care about for the tune flow. SmartSDR has no `transmit`
+            # sub topic (Phase-1 wire-protocol finding 2026-06-19);
+            # TX-state lives under interlock instead.
+            for topic in ("slice", "interlock", "radio"):
+                try:
+                    await flex.subscribe(topic)
+                except FlexProtocolError as e:
+                    print(f"warning: sub {topic} failed: {e}")
             print("Watching events. Ctrl-C to quit.")
             try:
                 await asyncio.Event().wait()
