@@ -3,8 +3,8 @@
 **Repo:** `~/projects/spe-remote` (canonical; the copy under `~/Documents/Claude/code/spe-remote` is stale, do not touch)
 **Branch:** `main`, clean, in sync with `origin/main`
 **Latest release:** `v3.0.0` — Flex orchestration + band sweep (2026-06-20)
-**Last commit:** `25f6c3e` — tune in CW (DIGU/DIGL TX offset broke band-edge tunes)
-**Date:** 2026-09-02
+**Last commit:** `af98146` — TODO #44 fake harness landed in-repo as `tests/test_tune_orchestrator_harness.py` (had been sitting untracked in the vu2cpl-shack clone; hardcoded repo path made relative, re-run ALL PASS from the new location — `python3 tests/test_tune_orchestrator_harness.py`, no hardware needed)
+**Date:** 2026-09-08
 
 ## What this project is
 
