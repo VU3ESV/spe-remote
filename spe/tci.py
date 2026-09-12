@@ -14,6 +14,10 @@ implementation https://github.com/sm5tog/sm5k-spe-tuner:
   * tune carrier:   ``tune:<trx>,true;`` / ``tune:<trx>,false;``
   * TX status in:   ``trx:<trx>,true|false`` (reliable; unlike tx_enable)
 
+TCI works in **Hz**; :class:`spe.radio.RadioConnection` works in **MHz**.
+The conversion lives at this boundary only — :meth:`TciConnection.set_frequency`
+going out, :meth:`TciConnection.snapshot` coming back.
+
 Transport is tornado's async WebSocket client, so no extra dependency: the
 project already depends on tornado for the server side.
 """
@@ -81,17 +85,27 @@ class TciConnection(RadioConnection):
 
         # ExpertSDR streams current state on connect and ends with
         # `ready;`. Wait for it (best effort) so snapshot() has data.
+        #
+        # Deliberately no VFO-query "nudge" here. TCI's request form for
+        # a parameter is the command minus its value (`vfo:0,0;`), but
+        # that grammar is ambiguous enough that a firmware revision could
+        # read the missing third argument as *set VFO to 0 Hz* and trash
+        # the operator's dial on every Sweep-menu open. The startup dump
+        # already fills the cache; if some revision ever skips it, the
+        # band check degrades to "radio band unknown" — which costs an
+        # explicit band argument, not the operator's VFO.
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=_READY_TIMEOUT)
         except asyncio.TimeoutError:
             logger.warning("TCI: no `ready;` within %.1fs — continuing", _READY_TIMEOUT)
 
-        # Nudge the radio to (re)emit both TRX VFOs so the cache is fresh.
-        await self._send(f"vfo:0,0;")
-        await self._send(f"vfo:1,0;")
         logger.info("TCI: connected to %s (version=%r)", self.host, self.radio_version)
 
     async def close(self) -> None:
+        # Grab the socket first: cancelling the read task runs its
+        # finally:, which clears self._ws — reading it afterwards would
+        # find None and leak the real socket.
+        ws = self._ws
         if self._read_task is not None:
             self._read_task.cancel()
             try:
@@ -99,9 +113,9 @@ class TciConnection(RadioConnection):
             except (asyncio.CancelledError, Exception):
                 pass
             self._read_task = None
-        if self._ws is not None:
+        if ws is not None:
             try:
-                self._ws.close()
+                ws.close()
             except Exception:
                 pass
         self._ws = None
@@ -119,10 +133,11 @@ class TciConnection(RadioConnection):
         await self._ws.write_message(message)
 
     async def _read_loop(self) -> None:
-        assert self._ws is not None
+        ws = self._ws
+        assert ws is not None
         try:
             while True:
-                msg = await self._ws.read_message()
+                msg = await ws.read_message()
                 if msg is None:        # socket closed by radio
                     logger.info("TCI: socket closed by radio")
                     break
@@ -135,6 +150,19 @@ class TciConnection(RadioConnection):
             raise
         except Exception:
             logger.exception("TCI: read loop crashed")
+        finally:
+            # However we got here this socket is done, so drop it:
+            # otherwise is_connected() keeps saying True after the radio
+            # is power-cycled, the next tune skips the reconnect and
+            # writes into a dead socket, and the operator has to
+            # radio_disconnect + radio_connect by hand to recover.
+            # Guarded so a reconnect's newer socket isn't clobbered by a
+            # late-finishing old loop. Mirrors spe/flex.py's finally: —
+            # when TCI grows a query-with-response, its pending futures
+            # get failed here too rather than leaking awaiters.
+            if self._ws is ws:
+                self._ws = None
+                self._ready.clear()
 
     def _dispatch(self, line: str) -> None:
         if not line:
@@ -199,25 +227,48 @@ class TciConnection(RadioConnection):
         await self._send(f"tune:{self._tx_channel},{'true' if on else 'false'};")
 
     def snapshot(self, channel: int) -> Optional[dict]:
+        """Freq crosses the RadioConnection interface in **MHz** (see
+        spe/radio.py) — the TCI event cache holds the radio's own Hz, so
+        convert here. The orchestrator's band check feeds this value
+        straight to band_for_freq(), which is MHz-only: handing it Hz
+        made every `tune_band('auto')` fail with "radio band unknown"
+        and made an explicit band silently bypass the radio-rules
+        safeguard."""
         state = self.vfo_state.get(channel)
         if not state:
             return None
-        freq = state.get("freq")
+        freq_hz = state.get("freq")
         mode = state.get("mode")
-        if freq is None and mode is None:
+        freq_mhz = None
+        if freq_hz is not None:
+            try:
+                freq_mhz = float(freq_hz) / 1_000_000.0
+            except (TypeError, ValueError):
+                logger.warning("TCI: unparsable vfo freq %r — "
+                               "treating it as unknown", freq_hz)
+        if freq_mhz is None and mode is None:
             return None
-        return {"channel": channel, "freq": freq, "mode": mode}
+        return {"channel": channel, "freq": freq_mhz, "mode": mode}
 
     async def restore(self, snap: Optional[dict]) -> None:
         if snap is None:
             return
         channel = snap["channel"]
-        freq = snap.get("freq")     # Hz string straight from the radio
+        freq_mhz = snap.get("freq")   # MHz — the interface unit
         mode = snap.get("mode")
         try:
-            if freq is not None:
-                await self._send(f"vfo:{channel},0,{int(freq)};")
+            if freq_mhz is not None:
+                # Reuse set_frequency's MHz→Hz conversion (and its
+                # rounding) so snapshot and restore can't drift apart,
+                # and so a fractional Hz can't raise the way int() did.
+                await self.set_frequency(channel, float(freq_mhz))
             if mode is not None:
+                # Verbatim: whatever sub-mode string the radio reported
+                # is what it gets back.
                 await self._send(f"modulation:{channel},{mode};")
         except Exception:
+            # Log *and* re-raise. Swallowing left the orchestrator
+            # emitting VFO_RESTORED while the radio was still parked on
+            # the last swept sub-band; _restore() turns this into FAIL.
             logger.exception("TCI: failed to restore vfo freq+mode")
+            raise

@@ -162,6 +162,25 @@ _SECTION_HDR = re.compile(r"^([A-Za-z0-9_]+):\s*(#.*)?$")
 _KEY_LINE = re.compile(r"^(\s+)([A-Za-z0-9_]+)(\s*:\s*)(.*?)(\s+#.*)?\s*$")
 
 
+def _insert_at(lines: list, hdr_idx: int) -> int:
+    """Index to insert a new key at, for the section whose header is at
+    ``hdr_idx``: just after the section's *last* existing key.
+
+    Not straight after the header — a section's explanatory comments sit
+    between the header and its keys, and inserting above them pushed new
+    keys away from the comments that describe the block (config.yaml is
+    meant to stay readable by hand). Falls back to the line after the
+    header for a section that has no keys yet.
+    """
+    last_key = hdr_idx
+    for i in range(hdr_idx + 1, len(lines)):
+        if _SECTION_HDR.match(lines[i]):
+            break                      # next section starts here
+        if _KEY_LINE.match(lines[i]):
+            last_key = i
+    return last_key + 1
+
+
 def persist_values(changes: dict, path: str = "config.yaml") -> bool:
     """Write ``changes`` into ``config.yaml`` in place, preserving comments.
 
@@ -211,7 +230,8 @@ def persist_values(changes: dict, path: str = "config.yaml") -> bool:
             None,
         )
         if hdr_idx is not None:
-            out[hdr_idx + 1:hdr_idx + 1] = block
+            at = _insert_at(out, hdr_idx)
+            out[at:at] = block
         else:
             if out and out[-1].strip() != "":
                 out.append("")

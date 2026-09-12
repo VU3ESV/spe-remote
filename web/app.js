@@ -32,7 +32,7 @@
         if (d.power_result) {
           handlePowerResult(d);
         } else if (d.config_event === "radio") {
-          handleRadioConfig(d.radio);
+          handleRadioConfig(d.radio, d.persisted);
         } else if (d.tune_event) {
           handleTuneEvent(d);
         } else if (d.heartbeat) {
@@ -419,9 +419,12 @@
   }
 
   // ---- Radio settings panel (client-selected radio) -----------------
-  // The server sends {config_event:"radio", radio:{kind, flex:{}, tci:{}}}
-  // on connect and after any change; we mirror it into the form. Applying
-  // sends set_radio_config:<json> which the server persists + applies live.
+  // The server sends {config_event:"radio", persisted:<bool>,
+  // radio:{kind, flex:{}, tci:{}}} on connect and after any change; we
+  // mirror it into the form. Applying sends set_radio_config:<json>, which
+  // the server validates, applies live, and persists. persisted:false means
+  // the switch took but config.yaml couldn't be written — say so, because
+  // the change reverts on the next restart.
   function val(id) { const el = document.getElementById(id); return el ? el.value : ""; }
   function setVal(id, v) { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = v; }
 
@@ -432,7 +435,9 @@
     if (tci) tci.hidden = kind !== "tci";
   }
 
-  function handleRadioConfig(radio) {
+  function handleRadioConfig(radio, persisted) {
+    const note = document.getElementById("radioPersistNote");
+    if (note) note.hidden = persisted !== false;
     if (!radio) return;
     setVal("radioKind", radio.kind);
     const f = radio.flex || {}, t = radio.tci || {};

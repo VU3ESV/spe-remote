@@ -101,14 +101,20 @@ class RadioController:
     # Live reconfiguration
     # ------------------------------------------------------------------
 
-    def reconfigure(self, radio: RadioConfig, flex: FlexConfig,
-                    tci: TciConfig) -> None:
-        """Swap the active radio kind/settings. Caller must disconnect()
-        first; the next connect() builds the new backend."""
-        self.radio = radio
-        self.flex = flex
-        self.tci = tci
-        self._resolved_flex_host = flex.host or ""
+    async def reconfigure(self, radio: RadioConfig, flex: FlexConfig,
+                          tci: TciConfig) -> None:
+        """Drop any open connection and swap the active radio
+        kind/settings; the next connect() builds the new backend.
+
+        Close and swap happen under the same lock connect()/disconnect()
+        take, so a radio_connect racing a client's set_radio_config can
+        only see the old config or the new one, never a mix."""
+        async with self._lock:
+            await self._close_locked()
+            self.radio = radio
+            self.flex = flex
+            self.tci = tci
+            self._resolved_flex_host = flex.host or ""
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -128,11 +134,15 @@ class RadioController:
                 self._status("RADIO_ERROR", "no radio configured")
                 return None
 
+            # Emitted once, before _build — Flex's UDP discovery runs
+            # inside _build and used to emit a second RADIO_CONNECTING of
+            # its own, which latching UIs showed as two "connecting…"
+            # flashes. _target_desc says when discovery is in play.
+            self._status("RADIO_CONNECTING", self._target_desc(kind))
             conn = await self._build(kind)
             if conn is None:
                 return None
 
-            self._status("RADIO_CONNECTING", self._target_desc(kind))
             try:
                 await conn.connect()
             except Exception as e:
@@ -155,15 +165,19 @@ class RadioController:
     async def disconnect(self) -> None:
         """Close the connection if open. Idempotent; never raises."""
         async with self._lock:
-            if self._conn is None:
-                return
-            try:
-                await self._conn.close()
-            except Exception:
-                logger.exception("Error closing radio connection")
-            finally:
-                self._conn = None
-                self._status("RADIO_DISCONNECTED")
+            await self._close_locked()
+
+    async def _close_locked(self) -> None:
+        """disconnect()'s body, for callers already holding ``_lock``."""
+        if self._conn is None:
+            return
+        try:
+            await self._conn.close()
+        except Exception:
+            logger.exception("Error closing radio connection")
+        finally:
+            self._conn = None
+            self._status("RADIO_DISCONNECTED")
 
     # ------------------------------------------------------------------
     # Backend construction
@@ -172,7 +186,8 @@ class RadioController:
     def _target_desc(self, kind: str) -> str:
         if kind == "tci":
             return f"{self.tci.host}:{self.tci.port} trx={self.tci.trx}"
-        host = self._resolved_flex_host or "auto-discover"
+        host = (self._resolved_flex_host
+                or "auto-discover on UDP 4992 (up to 5s)")
         return f"{host}:{self.flex.port} slice={self.flex.slice_rx}"
 
     async def _build(self, kind: str) -> Optional[RadioConnection]:
@@ -180,10 +195,9 @@ class RadioController:
         if kind == "flex":
             host = self._resolved_flex_host
             if not host:
-                self._status(
-                    "RADIO_CONNECTING",
-                    "flex.host empty — discovering on UDP 4992 (up to 5s)…",
-                )
+                # Note only — connect() already emitted the single
+                # RADIO_CONNECTING for this attempt.
+                logger.info("Flex: host empty — discovering on UDP 4992…")
                 try:
                     disc = await flex_discover()
                 except Exception as e:

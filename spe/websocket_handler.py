@@ -167,15 +167,76 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
     # Radio configuration (client-selected radio)
     # ------------------------------------------------------------------
 
+    # Per-kind field rules for set_radio_config. The bundled dashboard
+    # sends `Number(field) || <default>`, so a non-numeric entry arrives
+    # as the default — but a *typed* out-of-range value (slice_rx 99, a
+    # negative port) would otherwise be written straight to config.yaml
+    # and only surface much later as a cryptic FlexProtocolError at tune
+    # time. Range-check here so bad values never reach the file.
+    # Each entry is (coercion, inclusive bounds).
+    _RADIO_FIELD_RULES = {
+        "flex": {
+            "host": ("host", None),
+            "port": ("int", (1, 65535)),
+            "slice_rx": ("int", (0, 7)),        # SmartSDR allows 0-7 slices
+            "tune_power_watts": ("int", (1, 100)),   # SPE wants 2-15W
+        },
+        "tci": {
+            "host": ("host", None),
+            "port": ("int", (1, 65535)),
+            "trx": ("int", (0, 1)),             # ExpertSDR3 has TRX 0/1
+            "mode": ("mode", None),
+            "tune_drive": ("int", (0, 100)),    # percent; 0 = leave alone
+        },
+    }
+
     @classmethod
-    def _radio_config_payload(cls) -> str:
-        """Serialise the current radio config for a client picker/form."""
+    def _coerce_radio_field(cls, section: str, field: str):
+        """Return a validator for ``section.field``. Raises ValueError
+        (message is client-facing) on anything the backend can't use."""
+        rule, bounds = cls._RADIO_FIELD_RULES[section][field]
+
+        def check(value):
+            where = f"{section}.{field}"
+            if rule == "host":
+                host = str(value).strip()
+                if len(host.split()) > 1 or len(host) > 255:
+                    raise ValueError(f"{where}: {value!r} is not a hostname")
+                return host
+            if rule == "mode":
+                mode = str(value).strip().upper()
+                if not mode.isalnum() or len(mode) > 10:
+                    raise ValueError(f"{where}: {value!r} is not a mode name")
+                return mode
+            # bool is an int subclass — reject it rather than silently
+            # persisting True as 1.
+            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                raise ValueError(f"{where}: {value!r} is not a number")
+            try:
+                n = int(str(value).strip())
+            except ValueError:
+                raise ValueError(f"{where}: {value!r} is not a whole number")
+            lo, hi = bounds
+            if not lo <= n <= hi:
+                raise ValueError(f"{where}: {n} is outside {lo}-{hi}")
+            return n
+
+        return check
+
+    @classmethod
+    def _radio_config_payload(cls, persisted: bool = True) -> str:
+        """Serialise the current radio config for a client picker/form.
+
+        ``persisted`` is False when the live change could not be written
+        back to config.yaml — the client should show it as applying to
+        this session only."""
         cfg = cls._app_config
         flex = cfg.flex if cfg else None
         tci = cfg.tci if cfg else None
         kind = cfg.radio.kind if cfg else "none"
         return json.dumps({
             "config_event": "radio",
+            "persisted": persisted,
             "radio": {
                 "kind": kind,
                 "flex": {
@@ -202,6 +263,7 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
         broadcast the new config to every client. Payload is JSON:
         ``{"kind": "...", "flex": {...}, "tci": {...}}`` (sections
         optional). Refused while a tune cycle is running."""
+        from dataclasses import replace
         from spe.config import persist_values
 
         cfg = self._app_config
@@ -218,38 +280,62 @@ class AmplifierWebSocket(tornado.websocket.WebSocketHandler):
                 "RADIO_ERROR", f"bad set_radio_config payload: {e}")
             return
 
-        changes: dict = {}
         kind = str(data.get("kind", cfg.radio.kind)).strip().lower()
         if kind not in ("flex", "tci", "none"):
             AmplifierWebSocket.broadcast_tune_event(
                 "RADIO_ERROR", f"unknown radio kind {kind!r}")
             return
-        cfg.radio.kind = kind
-        changes["radio.kind"] = kind
+
+        # Validate every field the client sent *before* touching any live
+        # state, so a bad value is refused whole instead of leaving a
+        # half-applied config behind.
+        sent: dict = {"flex": {}, "tci": {}}
+        try:
+            for section in ("flex", "tci"):
+                block = data.get(section, {})
+                if not isinstance(block, dict):
+                    raise ValueError(f"{section}: expected an object")
+                for field in self._RADIO_FIELD_RULES[section]:
+                    if field in block:
+                        sent[section][field] = self._coerce_radio_field(
+                            section, field)(block[field])
+        except ValueError as e:
+            AmplifierWebSocket.broadcast_tune_event(
+                "RADIO_ERROR", f"bad set_radio_config: {e}")
+            return
+
+        # Build the new config off to the side and hand it over in one
+        # step: reconfigure() drops the open connection and swaps the
+        # backend under the controller's own lock, so a radio_connect
+        # from another client can't land on half-swapped state.
+        new_radio = replace(cfg.radio, kind=kind)
         # Keep flex.enabled consistent with the selector for back-compat.
-        cfg.flex.enabled = (kind == "flex")
-        changes["flex.enabled"] = cfg.flex.enabled
+        new_flex = replace(cfg.flex, enabled=(kind == "flex"), **sent["flex"])
+        new_tci = replace(cfg.tci, **sent["tci"])
+        await self._radio_controller.reconfigure(new_radio, new_flex, new_tci)
+        cfg.radio, cfg.flex, cfg.tci = new_radio, new_flex, new_tci
 
-        # Apply only the fields the client sent for each section.
-        for field in ("host", "port", "slice_rx", "tune_power_watts"):
-            if "flex" in data and field in data["flex"]:
-                setattr(cfg.flex, field, data["flex"][field])
-                changes[f"flex.{field}"] = data["flex"][field]
-        for field in ("host", "port", "trx", "mode", "tune_drive"):
-            if "tci" in data and field in data["tci"]:
-                setattr(cfg.tci, field, data["tci"][field])
-                changes[f"tci.{field}"] = data["tci"][field]
+        changes = {"radio.kind": kind, "flex.enabled": new_flex.enabled}
+        changes.update({f"flex.{k}": v for k, v in sent["flex"].items()})
+        changes.update({f"tci.{k}": v for k, v in sent["tci"].items()})
+        # persist_values only logs a warning on an I/O failure (read-only
+        # mount, missing config.yaml). Don't let the client believe a
+        # change stuck that the next restart will silently revert.
+        persisted = persist_values(changes, self._config_path)
+        logger.info("Radio config changed live: kind=%s (persisted=%s)",
+                    kind, persisted)
 
-        # Drop any open connection, then swap the controller's backend.
-        await self._radio_controller.disconnect()
-        self._radio_controller.reconfigure(cfg.radio, cfg.flex, cfg.tci)
-
-        persist_values(changes, self._config_path)
-        logger.info("Radio config changed live: kind=%s", kind)
-
-        AmplifierWebSocket.broadcast_raw(self._radio_config_payload())
+        AmplifierWebSocket.broadcast_raw(
+            self._radio_config_payload(persisted=persisted))
         AmplifierWebSocket.broadcast_tune_event(
-            "RADIO_CONFIG_UPDATED", f"radio set to {kind}")
+            "RADIO_CONFIG_UPDATED",
+            f"radio set to {kind}" if persisted else
+            f"radio set to {kind} — this session only, not saved")
+        if not persisted:
+            AmplifierWebSocket.broadcast_tune_event(
+                "RADIO_ERROR",
+                f"could not write {self._config_path}: the radio change "
+                "is live now but reverts on restart")
 
     async def _handle_power(self, command: str) -> None:
         """Handle power on/off commands asynchronously."""

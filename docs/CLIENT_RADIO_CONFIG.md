@@ -45,6 +45,19 @@ JSON after the `:`; send only the section for the chosen kind.
 - `kind` ∈ `flex | tci | none`. Unknown values are rejected with `RADIO_ERROR`.
 - All section fields are optional; omitted fields keep their stored value.
 - `host` empty for `flex` ⇒ UDP auto-discovery.
+- Fields are **range-checked server-side** before anything is applied or
+  written; a value outside its range is refused whole (nothing is applied,
+  nothing is persisted) with `RADIO_ERROR` naming the field:
+
+  | Field | Accepted |
+  |---|---|
+  | `flex.port`, `tci.port` | 1–65535 |
+  | `flex.slice_rx` | 0–7 |
+  | `flex.tune_power_watts` | 1–100 (the SPE wants 2–15 W) |
+  | `tci.trx` | 0–1 |
+  | `tci.tune_drive` | 0–100 (percent; 0 ⇒ leave it to ExpertSDR) |
+  | `flex.host`, `tci.host` | a single token, ≤255 chars (empty ⇒ discover, flex only) |
+  | `tci.mode` | alphanumeric, ≤10 chars; upper-cased |
 
 ## Server → client messages
 
@@ -55,6 +68,7 @@ Sent in reply to `get_config`, and broadcast to all clients after a successful
 ```json
 {
   "config_event": "radio",
+  "persisted": true,
   "radio": {
     "kind": "flex",
     "flex": {"host": "192.168.1.148", "port": 4992, "slice_rx": 0, "tune_power_watts": 10},
@@ -62,6 +76,11 @@ Sent in reply to `get_config`, and broadcast to all clients after a successful
   }
 }
 ```
+
+`persisted: false` means the change is live **but could not be written to
+`config.yaml`** (read-only mount, permissions, file missing) — it reverts on
+the next restart. A `RADIO_ERROR` with the reason follows the
+`RADIO_CONFIG_UPDATED`; surface it rather than showing a plain success.
 
 ### Tune/connection events — `tune_event` (unchanged channel)
 `{"tune_event": "<PHASE>", "tune_message": "...", "ts": <epoch>}`. Existing tune
@@ -75,7 +94,7 @@ SWEEP_STARTED, SWEEP_STEP, SWEEP_DONE). **New phases:**
 | `RADIO_CONNECTED` | Connected; message carries kind + host + version. |
 | `RADIO_DISCONNECTED` | Connection closed (housekeeping after a cycle). |
 | `RADIO_ERROR` | Connect/config failed; message says why (e.g. radio off). |
-| `RADIO_CONFIG_UPDATED` | A `set_radio_config` was applied (radio switched). |
+| `RADIO_CONFIG_UPDATED` | A `set_radio_config` was applied (radio switched). The message says "this session only, not saved" when the config write failed — see `persisted` above. |
 
 **Client handling:** treat `RADIO_*` like the old `FLEX_*` — they are *not*
 tune progress. Don't flip sweeping state on them; surface `RADIO_ERROR` to the
@@ -110,6 +129,7 @@ The phase string is open-ended — latch on the well-known terminals
 
 - The WS is unauthenticated on the LAN (same trust model as the existing live
   `set_temp_unit` config write). `set_radio_config` rewrites `config.yaml` on the
-  Pi (comment-preserving) and is refused while a tune is running.
+  Pi (comment-preserving) and is refused while a tune is running. A failed write
+  is reported, not swallowed (`persisted: false` + `RADIO_ERROR`).
 - One rig at a time. Switching kind disconnects the current rig first.
 - TCI tune power: ExpertSDR owns it unless `tci.tune_drive` (percent) is set > 0.

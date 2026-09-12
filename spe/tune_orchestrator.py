@@ -132,6 +132,8 @@ PHASES = (
     "RADIO_CONNECTED",
     "RADIO_DISCONNECTED",
     "RADIO_ERROR",
+    "RADIO_CONFIG_UPDATED",   # a client's set_radio_config was applied
+                              # (emitted by the WS handler, not here)
 )
 
 
@@ -398,8 +400,13 @@ class TuneOrchestrator:
                     await radio.set_frequency(channel, freq_mhz)
                     self._status("FREQ_SET",
                                  f"channel {channel} → {freq_mhz:.6f} MHz")
-                # Key a clean CW carrier on the tuned channel.
-                await radio.set_mode(channel, "CW")
+                # No set_mode here: _set_tune_mode() already put the
+                # channel in CW once, before the sweep loop — repeating
+                # it per sub-band cost a round-trip each (18 on a full
+                # sweep) and defeated its already-CW short-circuit. It
+                # also set a mode _restore couldn't put back in the one
+                # case _set_tune_mode deliberately skips (pre-tune mode
+                # unknown, so nothing to restore).
                 await radio.set_tune_power(power)
             except Exception as e:
                 self._status("FAIL", f"radio setup: {e}")
