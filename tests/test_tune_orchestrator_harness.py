@@ -303,6 +303,28 @@ async def t12_cw_mode_untouched():
           str(radio.calls))
 
 
+async def t13_restore_failure_is_not_vfo_restored():
+    """A backend that raises from restore() must surface as FAIL, not a
+    VFO_RESTORED the radio never honoured — the slice/TRX is still
+    parked on the last swept sub-band. Both backends re-raise now
+    (spe/tci.py and spe/flex.py), so this covers either."""
+    orch, serial, radio, phases = make(op_status="Oper")
+
+    async def dead_link(snap):
+        raise ConnectionError("link dropped")
+    radio.restore = dead_link
+
+    await orch.tune_single()
+    check("t13 no false VFO_RESTORED",
+          "VFO_RESTORED" not in names(phases), str(names(phases)))
+    check("t13 FAIL says it was the restore",
+          any(p == "FAIL" and "VFO restore" in m for p, m in phases),
+          str(phases))
+    check("t13 amp still handed back to OPERATE",
+          "OPER_RESTORED" in names(phases) and serial.state.op_status == "Oper",
+          str(names(phases)))
+
+
 async def t10_radio_unreachable():
     orch, serial, radio, phases = make(op_status="Oper", radio_none=True)
     ok = await orch.tune_band("20m")
@@ -317,7 +339,7 @@ async def main():
               t6_stop_mid_sweep_restores_operate, t7_single_operate_restore,
               t8_unknown_band, t9_channel_unknown_trusts_request,
               t10_radio_unreachable, t11_digu_tunes_in_cw,
-              t12_cw_mode_untouched):
+              t12_cw_mode_untouched, t13_restore_failure_is_not_vfo_restored):
         await t()
     print()
     if FAILURES:

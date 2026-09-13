@@ -80,6 +80,9 @@ class RadioConnection(abc.ABC):
     @abc.abstractmethod
     async def restore(self, snap: Optional[dict]) -> None:
         """Write a :meth:`snapshot` result back. No-op when ``snap`` is
-        None. A backend that *knows* the restore failed should log and
+        None. A backend that *knows* the restore failed must log and
         re-raise: the orchestrator turns that into a FAIL status rather
-        than emitting a VFO_RESTORED the radio never honoured."""
+        than emitting a VFO_RESTORED the radio never honoured — "the
+        radio is on the wrong freq but the log says restored" is the one
+        failure this phase must never hide. Both shipped backends do
+        (:mod:`spe.flex`, :mod:`spe.tci`)."""

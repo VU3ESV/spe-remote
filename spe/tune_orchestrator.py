@@ -112,7 +112,9 @@ PHASES = (
     "CARRIER_ON",      # radio tune carrier on; ATU should now sweep
     "LED_OFF",         # SPE LED off — ATU done (or aborted internally)
     "CARRIER_OFF",     # radio carrier stopped
-    "VFO_RESTORED",    # operator's saved freq+mode written back
+    "VFO_RESTORED",    # operator's saved freq+mode written back — only
+                       # emitted when the radio actually took it; a
+                       # failed restore is a FAIL instead
     "SUCCESS",         # terminal: single cycle completed cleanly
     "FAIL",            # terminal: error during the cycle (message has why)
     "ABORT",           # terminal: external stop() while running

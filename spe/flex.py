@@ -415,7 +415,13 @@ class FlexConnection(RadioConnection):
             if mode is not None:
                 await self.set_slice_mode(channel, mode)
         except Exception:
+            # Log *and* re-raise, matching TciConnection.restore. A
+            # swallowed failure here let the orchestrator emit
+            # VFO_RESTORED for a slice still parked on the last swept
+            # sub-band — "the radio is on the wrong freq but the log
+            # says restored". _restore() turns this into FAIL instead.
             logger.exception("Flex: failed to restore slice freq+mode")
+            raise
 
 
 # ──────────────────────────────────────────────────────────────────
